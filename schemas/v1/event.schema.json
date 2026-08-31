@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/qq230849622-a11y/AI-Dev-Control-Plane/schemas/v1/event.schema.json",
+  "title": "AICTRL Event V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocol",
+    "project_key",
+    "repo",
+    "task_id",
+    "head_sha",
+    "event_id",
+    "actor",
+    "event_type",
+    "status",
+    "occurred_at",
+    "payload"
+  ],
+  "properties": {
+    "protocol": {"const": "AICTRL_EVENT_V1"},
+    "project_key": {"type": "string", "minLength": 1},
+    "repo": {"type": "string", "pattern": "^[^/\\s]+/[^/\\s]+$"},
+    "task_id": {"type": "string", "minLength": 1},
+    "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "event_id": {"type": "string", "minLength": 1},
+    "actor": {"type": "string", "minLength": 1},
+    "event_type": {"type": "string", "minLength": 1},
+    "status": {"type": "string", "minLength": 1},
+    "occurred_at": {"type": "string", "minLength": 1},
+    "payload": {"type": "object"}
+  }
+}

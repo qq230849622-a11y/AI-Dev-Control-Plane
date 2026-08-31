@@ -1,6 +1,8 @@
 import argparse
+import sys
 
 from . import __version__
+from .validator import validate_path
 
 
 def main(argv=None):
@@ -10,5 +12,15 @@ def main(argv=None):
         action="version",
         version=f"%(prog)s {__version__}",
     )
-    parser.parse_args(argv)
+    subparsers = parser.add_subparsers(dest="command")
+    validate_parser = subparsers.add_parser("validate")
+    validate_parser.add_argument("path")
+    arguments = parser.parse_args(argv)
+
+    if arguments.command == "validate":
+        result = validate_path(arguments.path)
+        stream = sys.stdout if result.valid else sys.stderr
+        print(result.message, file=stream)
+        return 0 if result.valid else 1
+
     return 0

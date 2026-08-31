@@ -7,6 +7,7 @@ name = "ai-dev-control-plane"
 version = "0.1.0"
 description = "Minimal bootstrap for the AI Dev Control Plane."
 requires-python = ">=3.9"
+dependencies = ["jsonschema>=4.18"]
 
 [project.scripts]
 aictrl = "aictrl.cli:main"
