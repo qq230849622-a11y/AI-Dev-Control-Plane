@@ -7,6 +7,12 @@ Minimal CTRL-001 bootstrap project.
 ```text
 aictrl --version
 python -m aictrl --version
+aictrl validate <envelope.json>
+python -m aictrl validate <envelope.json>
+aictrl route --registry <binding-file-or-directory> <envelope.json>
+python -m aictrl route --registry <binding-file-or-directory> <envelope.json>
 ```
 
-CTRL-001 intentionally contains only the version command and its minimal test.
+`route` validates an AICTRL envelope before binding its exact `project_key` and
+`repo` to an enabled `AICTRL_PROJECT_V1` registry entry. Routing has no
+fallback or default project.
