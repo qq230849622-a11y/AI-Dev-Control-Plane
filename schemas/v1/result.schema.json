@@ -22,7 +22,7 @@
     "project_key": {"type": "string", "minLength": 1},
     "repo": {"type": "string", "pattern": "^[^/\\s]+/[^/\\s]+$"},
     "task_id": {"type": "string", "minLength": 1},
-    "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "head_sha": {"type": "string", "minLength": 40, "maxLength": 40, "pattern": "^[0-9a-f]+$"},
     "result_id": {"type": "string", "minLength": 1},
     "actor": {"type": "string", "minLength": 1},
     "status": {"type": "string", "minLength": 1},

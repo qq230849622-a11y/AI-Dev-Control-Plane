@@ -1,4 +1,5 @@
 import json
+import sysconfig
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -12,7 +13,16 @@ SCHEMA_FILENAMES = {
     "AICTRL_DECISION_V1": "decision.schema.json",
     "AICTRL_RESULT_V1": "result.schema.json",
 }
-SCHEMA_DIRECTORY = Path(__file__).resolve().parents[2] / "schemas" / "v1"
+
+
+def _schema_directory():
+    source_directory = Path(__file__).resolve().parents[2] / "schemas" / "v1"
+    if source_directory.is_dir():
+        return source_directory
+    return Path(sysconfig.get_path("data")) / "ai_dev_control_plane" / "schemas" / "v1"
+
+
+SCHEMA_DIRECTORY = _schema_directory()
 
 
 @dataclass(frozen=True)
@@ -56,7 +66,7 @@ def validate_path(path):
         )
 
     protocol = document.get("protocol")
-    if protocol not in SCHEMA_FILENAMES:
+    if not isinstance(protocol, str) or protocol not in SCHEMA_FILENAMES:
         detail = protocol if isinstance(protocol, str) else "<missing>"
         return ValidationResult(
             valid=False,

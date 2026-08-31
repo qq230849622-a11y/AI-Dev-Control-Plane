@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import subprocess
 import sys
 from copy import deepcopy
@@ -132,6 +133,44 @@ def test_entrypoint_cli_accepts_valid_task(tmp_path, capsys):
     assert capsys.readouterr().out == "VALID: AICTRL_TASK_V1\n"
 
 
+def test_installed_console_cli_accepts_valid_task(tmp_path):
+    project_root = Path(__file__).parents[1]
+    project_copy = tmp_path / "project-copy"
+    shutil.copytree(
+        project_root,
+        project_copy,
+        ignore=shutil.ignore_patterns(".git", ".pytest_cache", "__pycache__", "*.egg-info", "build"),
+    )
+    virtual_environment = tmp_path / "venv"
+    subprocess.run(
+        [sys.executable, "-m", "venv", "--system-site-packages", str(virtual_environment)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    scripts_directory = virtual_environment / ("Scripts" if os.name == "nt" else "bin")
+    virtual_python = scripts_directory / ("python.exe" if os.name == "nt" else "python")
+    installation = subprocess.run(
+        [str(virtual_python), "-m", "pip", "install", "--no-deps", "--no-build-isolation", "."],
+        cwd=project_copy,
+        capture_output=True,
+        text=True,
+    )
+
+    assert installation.returncode == 0, installation.stderr
+
+    result = subprocess.run(
+        [str(scripts_directory / ("aictrl.exe" if os.name == "nt" else "aictrl")), "validate", str(write_document(tmp_path, task_document()))],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == "VALID: AICTRL_TASK_V1\n"
+    assert result.stderr == ""
+
+
 def test_unknown_protocol_is_rejected(tmp_path):
     document = task_document()
     document["protocol"] = "AICTRL_UNKNOWN_V1"
@@ -141,6 +180,17 @@ def test_unknown_protocol_is_rejected(tmp_path):
     assert result.returncode == 1
     assert result.stdout == ""
     assert result.stderr == "UNKNOWN_PROTOCOL: AICTRL_UNKNOWN_V1\n"
+
+
+def test_non_string_protocol_is_rejected(tmp_path):
+    document = task_document()
+    document["protocol"] = []
+
+    result = run_module_validation(write_document(tmp_path, document))
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert result.stderr == "UNKNOWN_PROTOCOL: <missing>\n"
 
 
 def test_malformed_json_is_rejected(tmp_path):
@@ -160,6 +210,7 @@ def test_malformed_json_is_rejected(tmp_path):
         lambda document: document.pop("project_key"),
         lambda document: document.__setitem__("repo", "not-an-owner-name"),
         lambda document: document.__setitem__("head_sha", "ABC123"),
+        lambda document: document.__setitem__("head_sha", f"{HEAD_SHA}\n"),
         lambda document: document.__setitem__("unexpected", "field"),
         lambda document: document.__setitem__("model", "unsupported"),
     ],
