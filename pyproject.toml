@@ -20,6 +20,7 @@ where = ["src"]
     "schemas/v1/task.schema.json",
     "schemas/v1/event.schema.json",
     "schemas/v1/decision.schema.json",
+    "schemas/v1/project.schema.json",
     "schemas/v1/result.schema.json",
 ]
 

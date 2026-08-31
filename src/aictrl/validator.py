@@ -57,6 +57,11 @@ def validate_path(path):
             detail=str(path),
         )
 
+    return validate_document(document)
+
+
+def validate_document(document):
+
     if not isinstance(document, dict):
         return ValidationResult(
             valid=False,

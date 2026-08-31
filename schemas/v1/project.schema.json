@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/qq230849622-a11y/AI-Dev-Control-Plane/schemas/v1/project.schema.json",
+  "title": "AICTRL Project Binding V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocol",
+    "project_key",
+    "repo",
+    "default_branch",
+    "controller_key",
+    "enabled"
+  ],
+  "properties": {
+    "protocol": {"const": "AICTRL_PROJECT_V1"},
+    "project_key": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"},
+    "repo": {"type": "string", "pattern": "^[^/\\s]+/[^/\\s]+$"},
+    "default_branch": {"type": "string", "pattern": "^[^\\s]+$"},
+    "controller_key": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"},
+    "enabled": {"type": "boolean"}
+  }
+}
