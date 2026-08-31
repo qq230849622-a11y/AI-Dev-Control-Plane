@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/qq230849622-a11y/AI-Dev-Control-Plane/schemas/v1/decision.schema.json",
+  "title": "AICTRL Decision V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocol",
+    "project_key",
+    "repo",
+    "task_id",
+    "head_sha",
+    "decision_id",
+    "actor",
+    "decision_type",
+    "status",
+    "decision",
+    "rationale"
+  ],
+  "properties": {
+    "protocol": {"const": "AICTRL_DECISION_V1"},
+    "project_key": {"type": "string", "minLength": 1},
+    "repo": {"type": "string", "pattern": "^[^/\\s]+/[^/\\s]+$"},
+    "task_id": {"type": "string", "minLength": 1},
+    "head_sha": {"type": "string", "minLength": 40, "maxLength": 40, "pattern": "^[0-9a-f]+$"},
+    "decision_id": {"type": "string", "minLength": 1},
+    "actor": {"type": "string", "minLength": 1},
+    "decision_type": {"type": "string", "minLength": 1},
+    "status": {"type": "string", "minLength": 1},
+    "decision": {"type": "string", "minLength": 1},
+    "rationale": {"type": "string", "minLength": 1}
+  }
+}

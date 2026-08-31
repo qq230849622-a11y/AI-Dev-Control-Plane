@@ -7,12 +7,21 @@ name = "ai-dev-control-plane"
 version = "0.1.0"
 description = "Minimal bootstrap for the AI Dev Control Plane."
 requires-python = ">=3.9"
+dependencies = ["jsonschema>=4.18"]
 
 [project.scripts]
 aictrl = "aictrl.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.data-files]
+"ai_dev_control_plane/schemas/v1" = [
+    "schemas/v1/task.schema.json",
+    "schemas/v1/event.schema.json",
+    "schemas/v1/decision.schema.json",
+    "schemas/v1/result.schema.json",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
