@@ -181,13 +181,16 @@ def test_pre003_runtime_gates_use_v01210_machine_surfaces():
     assert session_by_name(sessions, "pre003-123456789012") == "probe-session"
 
 
-
 def test_admission_cli_writes_github_actions_outputs(tmp_path):
     event_path = tmp_path / "event.json"
     comments_path = tmp_path / "comments.json"
     output_path = tmp_path / "github-output.txt"
     event_path.write_text(json.dumps(valid_event()), encoding="utf-8")
-    comments_path.write_text(json.dumps([[{"body": "unrelated comment", "user": {"login": "untrusted"}}]]), encoding="utf-8")
+    # Windows PowerShell 5.1's Set-Content -Encoding utf8 writes a UTF-8 BOM.
+    comments_path.write_text(
+        json.dumps([[{"body": "unrelated comment", "user": {"login": "untrusted"}}]]),
+        encoding="utf-8-sig",
+    )
     project_root = Path(__file__).parents[1]
 
     result = subprocess.run(
@@ -288,5 +291,7 @@ def test_pre003_workflow_is_strictly_bound_and_has_no_pr_trigger():
     assert "always()" in workflow
     assert "PROBE_RUNTIME_ERROR" in workflow
     assert "worktree_path: $env:PRE003_WORKTREE_PATH" in workflow
+    assert "shell: powershell" in workflow
+    assert "shell: pwsh" not in workflow
     assert "pull_request:" not in workflow
     assert "pull_request_target:" not in workflow
