@@ -201,6 +201,25 @@ def test_desktop_thread_title_set_failure_fails_closed(monkeypatch):
         dispatch.set_and_verify_desktop_thread("ao.exe", {"port": 1}, "session-1", "project-1", "AICTRL PRE-005 terra")
 
 
+def test_post_worker_desktop_metadata_is_reverified_before_review_evidence(monkeypatch):
+    monkeypatch.setattr(dispatch, "session_snapshot", lambda *_: {"displayName": "AICTRL PRE-005 terra"})
+    monkeypatch.setattr(dispatch, "conversation_snapshot", lambda *_: {"providerThreadId": "codex-thread-1"})
+    assert dispatch.reverify_desktop_thread("ao.exe", {"port": 1}, "session-1", "project-1", "AICTRL PRE-005 terra", "codex-thread-1") is None
+
+
+@pytest.mark.parametrize("session, snapshot, code", [
+    (None, {"providerThreadId": "codex-thread-1"}, "DESKTOP_THREAD_TITLE_UNVERIFIED"),
+    ({"displayName": "other"}, {"providerThreadId": "codex-thread-1"}, "DESKTOP_THREAD_TITLE_UNVERIFIED"),
+    ({"displayName": "AICTRL PRE-005 terra"}, {}, "PROVIDER_THREAD_ID_UNAVAILABLE"),
+    ({"displayName": "AICTRL PRE-005 terra"}, {"providerThreadId": "other-thread"}, "PROVIDER_THREAD_ID_UNVERIFIED"),
+])
+def test_post_worker_desktop_metadata_absence_or_drift_fails_closed(monkeypatch, session, snapshot, code):
+    monkeypatch.setattr(dispatch, "session_snapshot", lambda *_: session)
+    monkeypatch.setattr(dispatch, "conversation_snapshot", lambda *_: snapshot)
+    with pytest.raises(dispatch.DispatchFailure, match=code):
+        dispatch.reverify_desktop_thread("ao.exe", {"port": 1}, "session-1", "project-1", "AICTRL PRE-005 terra", "codex-thread-1")
+
+
 def test_direct_script_entry_bootstraps_repo_src_without_pythonpath(tmp_path):
     environment = os.environ.copy()
     environment.pop("PYTHONPATH", None)

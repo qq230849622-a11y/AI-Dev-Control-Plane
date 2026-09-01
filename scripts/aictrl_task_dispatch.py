@@ -506,6 +506,14 @@ def set_and_verify_desktop_thread(binary, status, session_id, project_id, title)
     return provider_thread_id(conversation_snapshot(status, session_id))
 
 
+def reverify_desktop_thread(binary, status, session_id, project_id, title, expected_provider_id):
+    session = session_snapshot(binary, session_id, project_id)
+    if session is None or session.get("displayName") != title:
+        raise DispatchFailure("DESKTOP_THREAD_TITLE_UNVERIFIED")
+    if provider_thread_id(conversation_snapshot(status, session_id)) != expected_provider_id:
+        raise DispatchFailure("PROVIDER_THREAD_ID_UNVERIFIED")
+
+
 def send_worker_brief(binary, session_id, brief):
     if not isinstance(brief, str) or not brief.strip() or len(brief) > 4096:
         raise DispatchFailure("WORKER_BRIEF_TOO_LARGE")
@@ -751,6 +759,7 @@ def execute(event_path, result_path):
         run_testing_policy(workspace, task)
         if defender_fingerprint() != defender_before:
             raise DispatchFailure("DEFENDER_NEW_DETECTION")
+        reverify_desktop_thread(binary, status, session_id, project_id, desktop_title, provider_id)
         evidence = json.dumps(review_event(task, dispatch["event_id"], pr, worker_head, model, task["reasoning"], session_id, desktop_title, provider_id), sort_keys=True) + "\n"
     except DispatchFailure as exc:
         failure = exc.code
