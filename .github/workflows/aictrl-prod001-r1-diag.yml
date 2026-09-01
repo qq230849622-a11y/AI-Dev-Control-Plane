@@ -1,0 +1,61 @@
+name: AICTRL PROD-001 R1 no-model diagnostic
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: aictrl-prod001-r1-diag
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    if: >-
+      github.repository == 'qq230849622-a11y/AI-Dev-Control-Plane' &&
+      github.actor == 'qq230849622-a11y' &&
+      github.event.issue.number == 20 &&
+      github.event.action == 'created' &&
+      startsWith(github.event.comment.body, 'AICTRL_PROD001_R1_DIAG_V1')
+    runs-on: [self-hosted, Windows, X64, aictrl-win]
+    timeout-minutes: 10
+    steps:
+      - name: Initialize bounded diagnostic result
+        shell: powershell
+        run: |
+          @"
+          AICTRL_PROD001_R1_DIAG_RESULT_V1
+          project_key: AI_DEV_CONTROL_PLANE
+          repo: qq230849622-a11y/AI-Dev-Control-Plane
+          task_id: CTRL-PROD-001
+          reason: DIAG_NOT_COMPLETED
+          status: FAIL
+          "@ | Set-Content -LiteralPath "$env:RUNNER_TEMP\aictrl-prod001-r1-diag.txt" -Encoding utf8
+
+      - name: Check out trusted default branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Inspect AO/git worktree state without model execution
+        id: diag
+        shell: powershell
+        run: >-
+          python -m scripts.aictrl_prod001_r1_diag
+          --event "$env:GITHUB_EVENT_PATH"
+          --result "$env:RUNNER_TEMP\aictrl-prod001-r1-diag.txt"
+
+      - name: Post bounded diagnostic result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: powershell
+        run: |
+          $result = "$env:RUNNER_TEMP\aictrl-prod001-r1-diag.txt"
+          if (!(Test-Path -LiteralPath $result)) { throw "PROD-001 R1 diagnostic result missing." }
+          gh issue comment 20 --repo qq230849622-a11y/AI-Dev-Control-Plane --body-file $result
+          if ('${{ steps.diag.outcome }}' -ne 'success') { exit 1 }
