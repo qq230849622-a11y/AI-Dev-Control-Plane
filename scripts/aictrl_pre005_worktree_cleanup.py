@@ -4,9 +4,9 @@ import scripts.aictrl_prod001_worktree_cleanup as cleanup
 
 
 cleanup.ISSUE_NUMBER = 29
-cleanup.SESSION_ID = "ai-dev-control-plane-12"
+cleanup.SESSION_ID = "ai-dev-control-plane-14"
 cleanup.BRANCH = "aictrl/pre-005"
-cleanup.EXPECTED_HEAD = "ed08ff33341d4d3f7a4d086dc65d79ae25848876"
+cleanup.EXPECTED_HEAD = "08c284c3d9573c6bbb1a0c39474aeb412c5a55a7"
 cleanup.EXPECTED_COMMENT = "\n".join(
     [
         "AICTRL_PRE005_WORKTREE_CLEANUP_V1",
