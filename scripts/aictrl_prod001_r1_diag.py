@@ -1,6 +1,5 @@
 import argparse
 import json
-import subprocess
 from pathlib import Path
 
 import scripts.aictrl_pre004_dispatch as base
@@ -75,6 +74,18 @@ def api_sessions(status, active):
     return output
 
 
+def bounded_status_lines(text, limit=20):
+    lines = []
+    for raw in text.splitlines():
+        value = raw.strip()
+        if not value:
+            continue
+        lines.append(value[:300])
+        if len(lines) >= limit:
+            break
+    return lines
+
+
 def execute(event_path, result_path):
     lines = [
         "AICTRL_PROD001_R1_DIAG_RESULT_V1",
@@ -120,10 +131,19 @@ def execute(event_path, result_path):
             if exists:
                 branch_result = base.run(["git", "branch", "--show-current"], cwd=path)
                 head_result = base.run(["git", "rev-parse", "HEAD"], cwd=path)
-                status_result = base.run(["git", "status", "--porcelain"], cwd=path)
+                status_result = base.run(["git", "status", "--porcelain=v1", "--untracked-files=all"], cwd=path)
                 lines.append(f"target_worktree_current_branch: {branch_result.stdout.strip() if branch_result.returncode == 0 else 'unreadable'}")
                 lines.append(f"target_worktree_actual_head: {head_result.stdout.strip() if head_result.returncode == 0 else 'unreadable'}")
-                lines.append(f"target_worktree_dirty: {'true' if status_result.returncode != 0 or bool(status_result.stdout.strip()) else 'false'}")
+                dirty = status_result.returncode != 0 or bool(status_result.stdout.strip())
+                lines.append(f"target_worktree_dirty: {'true' if dirty else 'false'}")
+                status_lines = bounded_status_lines(status_result.stdout if status_result.returncode == 0 else "STATUS_UNREADABLE")
+                lines.append(f"target_worktree_status_count: {len(status_lines)}")
+                for index, value in enumerate(status_lines, start=1):
+                    lines.append(f"target_worktree_status_{index}: {value}")
+                diff_names = bounded_status_lines(run_git(path, "diff", "--name-status", "--no-renames", "HEAD"))
+                lines.append(f"target_worktree_diff_count: {len(diff_names)}")
+                for index, value in enumerate(diff_names, start=1):
+                    lines.append(f"target_worktree_diff_{index}: {value}")
         prune = base.run(["git", "worktree", "prune", "--dry-run", "--verbose"], cwd=main_path)
         prune_text = " | ".join(line.strip() for line in prune.stdout.splitlines() if line.strip())
         lines.append(f"prune_dry_run: {prune_text[:500] if prune_text else 'none'}")
