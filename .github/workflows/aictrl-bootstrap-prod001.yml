@@ -1,0 +1,74 @@
+name: AICTRL bootstrap PROD-001
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: aictrl-bootstrap-prod001
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    if: >-
+      github.repository == 'qq230849622-a11y/AI-Dev-Control-Plane' &&
+      github.actor == 'qq230849622-a11y' &&
+      github.event.issue.number == 20 &&
+      github.event.action == 'created' &&
+      startsWith(github.event.comment.body, 'AICTRL_BOOTSTRAP_PROD001_START_V1')
+    runs-on: [self-hosted, Windows, X64, aictrl-win]
+    timeout-minutes: 30
+    steps:
+      - name: Initialize bounded bootstrap result
+        shell: powershell
+        run: |
+          @"
+          AICTRL_BOOTSTRAP_PROD001_RESULT_V1
+          project_key: AI_DEV_CONTROL_PLANE
+          repo: qq230849622-a11y/AI-Dev-Control-Plane
+          task_id: CTRL-PROD-001
+          model: gpt-5.6-terra
+          session_id:
+          worker_head:
+          pr_number:
+          pr_url:
+          reason: DISPATCHER_NOT_COMPLETED
+          status: FAIL
+          "@ | Set-Content -LiteralPath "$env:RUNNER_TEMP\aictrl-bootstrap-prod001-result.txt" -Encoding utf8
+
+      - name: Check out trusted default branch
+        # actions/checkout v4.2.2 pinned to immutable release commit.
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Dispatch bounded Terra implementation worker
+        id: dispatch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: powershell
+        run: >-
+          python scripts/aictrl_bootstrap_prod001.py
+          --event "$env:GITHUB_EVENT_PATH"
+          --result "$env:RUNNER_TEMP\aictrl-bootstrap-prod001-result.txt"
+
+      - name: Post bounded bootstrap result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: powershell
+        run: |
+          $result = "$env:RUNNER_TEMP\aictrl-bootstrap-prod001-result.txt"
+          if (!(Test-Path -LiteralPath $result)) {
+            throw "PROD-001 bootstrap result file is missing."
+          }
+          gh issue comment 20 --repo qq230849622-a11y/AI-Dev-Control-Plane --body-file $result
+          if ('${{ steps.dispatch.outcome }}' -ne 'success') {
+            exit 1
+          }
