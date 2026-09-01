@@ -1,0 +1,37 @@
+{
+  "protocol": "AICTRL_TASK_V1",
+  "project_key": "AI_DEV_CONTROL_PLANE",
+  "repo": "qq230849622-a11y/AI-Dev-Control-Plane",
+  "task_id": "EXAMPLE-001",
+  "head_sha": "e2663570e48dcdaf85ec7a9e9d7ed703e14c88cc",
+  "objective": "Demonstrate local task-envelope validation.",
+  "outcome": "A maintainer can validate a bounded task before dispatch.",
+  "dependencies": [],
+  "allowed_scope": [
+    "examples/**"
+  ],
+  "forbidden_scope": [
+    ".github/workflows/**"
+  ],
+  "acceptance_criteria": [
+    "The example validates successfully."
+  ],
+  "complexity": "C1",
+  "model": "luna",
+  "reasoning": "low",
+  "goal_mode": false,
+  "max_attempts": 1,
+  "testing_policy": {
+    "required": true,
+    "commands": [
+      "python -m pytest -q"
+    ]
+  },
+  "escalation_policy": {
+    "on_failure": "STOP",
+    "on_blocker": "ESCALATE"
+  },
+  "owner_gate_required": true,
+  "status": "DRAFT",
+  "owner": "qq230849622-a11y"
+}

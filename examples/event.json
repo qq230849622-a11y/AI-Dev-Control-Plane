@@ -1,0 +1,15 @@
+{
+  "protocol": "AICTRL_EVENT_V1",
+  "project_key": "AI_DEV_CONTROL_PLANE",
+  "repo": "qq230849622-a11y/AI-Dev-Control-Plane",
+  "task_id": "EXAMPLE-001",
+  "head_sha": "e2663570e48dcdaf85ec7a9e9d7ed703e14c88cc",
+  "event_id": "example-event-001",
+  "actor": "maintainer",
+  "event_type": "TASK_DECLARED",
+  "status": "RECORDED",
+  "occurred_at": "2026-09-01T00:00:00Z",
+  "payload": {
+    "source": "example"
+  }
+}

@@ -9,7 +9,7 @@ permissions:
   issues: write
 
 concurrency:
-  group: aictrl-task-dispatch-ai-dev-control-plane
+  group: aictrl-dispatch-ai-dev-control-plane
   cancel-in-progress: false
 
 jobs:

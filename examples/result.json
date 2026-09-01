@@ -1,0 +1,17 @@
+{
+  "protocol": "AICTRL_RESULT_V1",
+  "project_key": "AI_DEV_CONTROL_PLANE",
+  "repo": "qq230849622-a11y/AI-Dev-Control-Plane",
+  "task_id": "EXAMPLE-001",
+  "head_sha": "e2663570e48dcdaf85ec7a9e9d7ed703e14c88cc",
+  "result_id": "example-result-001",
+  "actor": "validator",
+  "status": "RECORDED",
+  "progress_delta": [
+    "EVIDENCE_DELTA"
+  ],
+  "summary": "The example envelope validated successfully.",
+  "evidence": [
+    "aictrl validate examples/task.json"
+  ]
+}

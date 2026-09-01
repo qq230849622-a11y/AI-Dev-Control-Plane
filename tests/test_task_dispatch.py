@@ -314,7 +314,7 @@ def test_generic_workflow_is_issue_comment_only_and_initializes_evidence_first()
     assert "runs-on: [self-hosted, Windows, X64, aictrl-win]" in workflow
     assert "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683" in workflow
     assert workflow.count("GH_TOKEN: ${{ github.token }}") == 2
-    assert "group: aictrl-task-dispatch-ai-dev-control-plane" in workflow
+    assert "group: aictrl-dispatch-ai-dev-control-plane" in workflow
     assert "github.event.comment.id" not in workflow
     assert "permissions:\n  contents: read\n  issues: write" in workflow
     assert workflow.index("Initialize bounded failure evidence") < workflow.index("Check out trusted default branch")
