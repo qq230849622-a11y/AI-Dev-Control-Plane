@@ -9,7 +9,6 @@ permissions:
 
 jobs:
   release:
-    if: startsWith(github.event.head_commit.message, 'release: v0.1.0')
     runs-on: ubuntu-latest
     steps:
       - name: Check out release commit
@@ -17,13 +16,18 @@ jobs:
       - name: Create release if absent
         env:
           GH_TOKEN: ${{ github.token }}
+          HEAD_MESSAGE: ${{ github.event.head_commit.message }}
         shell: bash
         run: |
+          if [[ "$HEAD_MESSAGE" != "release: v0.1.0 retry" ]]; then
+            echo "Not the one-shot release commit; skipping."
+            exit 0
+          fi
           if gh release view v0.1.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "v0.1.0 already exists"
             exit 0
           fi
-          notes="$(sed -n '/^## \\[0.1.0\\]/,$p' CHANGELOG.md)"
+          notes="$(sed -n '/^## \[0.1.0\]/,$p' CHANGELOG.md)"
           gh release create v0.1.0 \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
