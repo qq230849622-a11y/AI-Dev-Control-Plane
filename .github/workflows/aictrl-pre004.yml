@@ -1,0 +1,57 @@
+name: AICTRL PRE-004 write-to-PR probe
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: aictrl-pre004
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    if: >-
+      github.repository == 'qq230849622-a11y/AI-Dev-Control-Plane' &&
+      github.actor == 'qq230849622-a11y' &&
+      github.event.issue.number == 15 &&
+      github.event.action == 'created' &&
+      startsWith(github.event.comment.body, 'AICTRL_PRE004_START_V1')
+    runs-on: [self-hosted, Windows, X64, aictrl-win]
+    timeout-minutes: 20
+    steps:
+      - name: Check out trusted default branch
+        # actions/checkout v4.2.2 pinned to its immutable release commit.
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Dispatch bounded Terra write probe
+        id: dispatch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: powershell
+        run: >-
+          python scripts/aictrl_pre004_dispatch.py
+          --event "$env:GITHUB_EVENT_PATH"
+          --result "$env:RUNNER_TEMP\aictrl-pre004-result.txt"
+
+      - name: Post bounded PRE-004 result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: powershell
+        run: |
+          $result = "$env:RUNNER_TEMP\aictrl-pre004-result.txt"
+          if (!(Test-Path -LiteralPath $result)) {
+            throw "PRE-004 dispatcher did not produce a bounded result file."
+          }
+          gh issue comment 15 --repo qq230849622-a11y/AI-Dev-Control-Plane --body-file $result
+          if ('${{ steps.dispatch.outcome }}' -ne 'success') {
+            exit 1
+          }
