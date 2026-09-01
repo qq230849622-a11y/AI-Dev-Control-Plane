@@ -108,16 +108,26 @@ def build_probe_marker(event_id):
 
 
 def is_luna_session(session_document):
+    if not isinstance(session_document, dict):
+        return False
+    session = session_document.get("session")
     return (
-        isinstance(session_document, dict)
-        and isinstance(session_document.get("session"), dict)
-        and session_document["session"].get("model") == EXPECTED_MODEL
+        isinstance(session, dict)
+        and isinstance(session.get("id"), str)
+        and bool(session["id"])
+        and session.get("harness") == "codex"
+        and session.get("model") == EXPECTED_MODEL
     )
 
 
 def has_exact_session_result(session_document, marker):
-    return (
-        isinstance(session_document, dict)
-        and isinstance(session_document.get("session"), dict)
-        and session_document["session"].get("result") == marker
+    if not isinstance(session_document, dict) or not isinstance(marker, str):
+        return False
+    messages = session_document.get("messages")
+    return isinstance(messages, list) and any(
+        isinstance(message, dict)
+        and message.get("role") == "assistant"
+        and message.get("origin") == "provider"
+        and message.get("text") == marker
+        for message in messages
     )

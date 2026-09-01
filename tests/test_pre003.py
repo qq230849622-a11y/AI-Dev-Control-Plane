@@ -3,6 +3,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import scripts.aictrl_pre003_probe as probe_module
+
 from aictrl.pre003 import (
     EXPECTED_ACTOR,
     EXPECTED_HEADER,
@@ -133,14 +135,50 @@ def test_detects_only_a_bound_pong_for_the_same_event_id():
 
 def test_accepts_only_an_exact_result_field_from_a_luna_session():
     marker = build_probe_marker("event-42")
-    valid_session = {"session": {"model": EXPECTED_MODEL, "result": marker}}
-    prompt_echo_only = {"session": {"model": EXPECTED_MODEL, "prompt": marker}}
-    wrong_model = {"session": {"model": "gpt-5.6-terra", "result": marker}}
+    session_view = {"session": {"id": "session-1", "harness": "codex", "model": EXPECTED_MODEL}}
+    conversation_snapshot = {
+        "sessionId": "session-1",
+        "harness": "codex",
+        "settings": {"model": EXPECTED_MODEL},
+        "messages": [{"role": "assistant", "origin": "provider", "text": marker}],
+    }
+    prompt_echo_only = {
+        "sessionId": "session-1",
+        "harness": "codex",
+        "settings": {"model": EXPECTED_MODEL},
+        "messages": [{"role": "user", "origin": "user", "text": marker}],
+    }
+    reduced_cli_dto = {"session": {"model": EXPECTED_MODEL, "result": marker}}
+    wrong_model = {"session": {"model": "gpt-5.6-terra"}}
 
-    assert is_luna_session(valid_session) is True
-    assert has_exact_session_result(valid_session, marker) is True
+    assert is_luna_session(session_view) is True
+    assert has_exact_session_result(conversation_snapshot, marker) is True
     assert has_exact_session_result(prompt_echo_only, marker) is False
+    assert has_exact_session_result(reduced_cli_dto, marker) is False
     assert is_luna_session(wrong_model) is False
+
+
+def test_pre003_runtime_gates_use_v01210_machine_surfaces():
+    catalog = {
+        "agentId": "codex",
+        "selectionMode": "catalog",
+        "models": [{"id": EXPECTED_MODEL, "label": "Luna", "isDefault": False}],
+    }
+    sessions = {
+        "sessions": [
+            {"id": "other-session", "projectId": "other-project", "displayName": "other"},
+            {"id": "probe-session", "projectId": "ai-dev-control-plane", "displayName": "pre003-123456789012"},
+        ]
+    }
+    catalog_gate = getattr(probe_module, "catalog_has_luna", lambda _: False)
+    login_gate = getattr(probe_module, "is_chatgpt_login_status", lambda _: False)
+    session_by_name = getattr(probe_module, "session_id_by_name", lambda *_: None)
+
+    assert catalog_gate(catalog) is True
+    assert catalog_gate({"models": [{"id": "gpt-5.6-terra"}]}) is False
+    assert login_gate("Logged in using ChatGPT\n") is True
+    assert login_gate("Logged in using an API key\n") is False
+    assert session_by_name(sessions, "pre003-123456789012") == "probe-session"
 
 
 
@@ -246,6 +284,9 @@ def test_pre003_workflow_is_strictly_bound_and_has_no_pr_trigger():
     assert "github.event.issue.number == 7" in workflow
     assert "ref: ${{ github.event.repository.default_branch }}" in workflow
     assert "gpt-5.6-luna" in workflow
+    assert "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683" in workflow
+    assert "always()" in workflow
+    assert "PROBE_RUNTIME_ERROR" in workflow
     assert "worktree_path: $env:PRE003_WORKTREE_PATH" in workflow
     assert "pull_request:" not in workflow
     assert "pull_request_target:" not in workflow

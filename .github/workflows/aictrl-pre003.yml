@@ -23,7 +23,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out the trusted default branch
-        uses: actions/checkout@v4
+        # actions/checkout v4.2.2, pinned to the official immutable release commit.
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
@@ -68,13 +69,20 @@ jobs:
           --output "$env:GITHUB_OUTPUT"
 
       - name: Post bounded PRE-003 failure
-        if: steps.admit.outputs.admitted == 'true' && steps.admit.outputs.duplicate != 'true' && steps.probe.outputs.status != 'PASS'
+        if: >-
+          always() &&
+          steps.admit.outputs.admitted == 'true' &&
+          steps.admit.outputs.duplicate != 'true' &&
+          (steps.probe.outcome == 'failure' || steps.probe.outputs.status != 'PASS')
         env:
           GH_TOKEN: ${{ github.token }}
           PRE003_EVENT_ID: ${{ steps.admit.outputs.event_id }}
-          PRE003_REASON: ${{ steps.probe.outputs.reason }}
+          PRE003_REASON: ${{ steps.probe.outputs.reason || 'PROBE_RUNTIME_ERROR' }}
         shell: pwsh
         run: |
+          if ([string]::IsNullOrWhiteSpace($env:PRE003_REASON)) {
+            $env:PRE003_REASON = 'PROBE_RUNTIME_ERROR'
+          }
           $body = @"
           AICTRL_PRE003_FAIL_V1
           project_key: AI_DEV_CONTROL_PLANE

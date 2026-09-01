@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 from urllib.error import URLError
+from urllib.parse import quote
 from urllib.request import urlopen
 from pathlib import Path
 
@@ -39,9 +40,12 @@ def ao_binary():
 
 
 def command_json(binary, *arguments):
-    result = subprocess.run(
-        [str(binary), *arguments], capture_output=True, text=True, check=False
-    )
+    try:
+        result = subprocess.run(
+            [str(binary), *arguments], capture_output=True, text=True, check=False
+        )
+    except OSError:
+        return None
     if result.returncode != 0:
         return None
     try:
@@ -51,10 +55,13 @@ def command_json(binary, *arguments):
 
 
 def command_success(binary, *arguments):
-    return (
-        subprocess.run([str(binary), *arguments], capture_output=True, text=True, check=False).returncode
-        == 0
-    )
+    try:
+        return (
+            subprocess.run([str(binary), *arguments], capture_output=True, text=True, check=False).returncode
+            == 0
+        )
+    except OSError:
+        return False
 
 
 def is_ready(status):
@@ -74,6 +81,8 @@ def ensure_ready(binary):
 
 
 def find_authorized_codex(agent_catalog):
+    if not isinstance(agent_catalog, dict):
+        return False
     return any(
         agent.get("id") == "codex" and agent.get("authStatus") == "authorized"
         for agent in agent_catalog.get("authorized", [])
@@ -87,62 +96,112 @@ def project_path(project):
 
 
 def clean_head(path):
-    head = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=path, capture_output=True, text=True, check=False
-    )
-    status = subprocess.run(
-        ["git", "status", "--porcelain"], cwd=path, capture_output=True, text=True, check=False
-    )
+    try:
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=path, capture_output=True, text=True, check=False
+        )
+        status = subprocess.run(
+            ["git", "status", "--porcelain"], cwd=path, capture_output=True, text=True, check=False
+        )
+    except OSError:
+        return None
     if head.returncode != 0 or status.returncode != 0 or status.stdout:
         return None
     value = head.stdout.strip()
     return value if len(value) == 40 else None
 
 
-def session_ids(document):
-    if not isinstance(document, dict):
-        return set()
-    return {
+def session_id_by_name(document, session_name):
+    if not isinstance(document, dict) or not isinstance(session_name, str):
+        return None
+    matches = [
         session.get("id")
-        for session in document.get("data", [])
-        if isinstance(session, dict) and isinstance(session.get("id"), str)
-    }
+        for session in document.get("sessions", [])
+        if isinstance(session, dict)
+        and session.get("projectId") == AO_PROJECT_ID
+        and session.get("displayName") == session_name
+        and isinstance(session.get("id"), str)
+        and session["id"]
+    ]
+    return matches[0] if len(matches) == 1 else None
 
 
-def contains_marker(value, marker):
-    if isinstance(value, str):
-        return marker in value
-    if isinstance(value, dict):
-        return any(contains_marker(item, marker) for item in value.values())
-    if isinstance(value, list):
-        return any(contains_marker(item, marker) for item in value)
-    return False
+def catalog_has_luna(catalog):
+    return (
+        isinstance(catalog, dict)
+        and catalog.get("agentId") == "codex"
+        and isinstance(catalog.get("models"), list)
+        and any(isinstance(model, dict) and model.get("id") == EXPECTED_MODEL for model in catalog["models"])
+    )
 
 
-def session_workspace(status, session_id):
+def is_chatgpt_login_status(output):
+    return isinstance(output, str) and output.strip() == "Logged in using ChatGPT"
+
+
+def has_chatgpt_login():
+    try:
+        result = subprocess.run(
+            ["codex", "login", "status"], capture_output=True, text=True, check=False
+        )
+    except OSError:
+        return False
+    return result.returncode == 0 and is_chatgpt_login_status(result.stdout)
+
+
+def api_document(status, path):
     port = status.get("port") if isinstance(status, dict) else None
     if not isinstance(port, int):
         return None
     try:
-        with urlopen(
-            f"http://127.0.0.1:{port}/api/v1/desktop/sessions/{session_id}/workspace",
-            timeout=2,
-        ) as response:
+        with urlopen(f"http://127.0.0.1:{port}{path}", timeout=2) as response:
             document = json.loads(response.read().decode("utf-8"))
-    except (OSError, URLError, json.JSONDecodeError):
+    except (OSError, URLError, ValueError, json.JSONDecodeError):
         return None
+    return document if isinstance(document, dict) else None
+
+
+def session_view(status, session_id):
+    return api_document(status, f"/api/v1/sessions/{quote(session_id, safe='')}")
+
+
+def conversation_snapshot(status, session_id):
+    return api_document(status, f"/api/v1/sessions/{quote(session_id, safe='')}/conversation?limit=100")
+
+
+def codex_model_catalog(status):
+    return api_document(status, f"/api/v1/agents/codex/models?projectId={quote(AO_PROJECT_ID, safe='')}")
+
+
+def is_bound_luna_conversation(snapshot, session_id):
+    return (
+        isinstance(snapshot, dict)
+        and snapshot.get("sessionId") == session_id
+        and snapshot.get("harness") == "codex"
+        and isinstance(snapshot.get("settings"), dict)
+        and snapshot["settings"].get("model") == EXPECTED_MODEL
+    )
+
+
+def session_workspace(status, session_id):
+    document = api_document(
+        status, f"/api/v1/desktop/sessions/{quote(session_id, safe='')}/workspace"
+    )
     value = document.get("workspacePath") if isinstance(document, dict) else None
     return Path(value) if isinstance(value, str) and value else None
 
 
 def git_common_dir(path):
-    result = subprocess.run(
-        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
-        cwd=path,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            cwd=path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
     if result.returncode != 0 or not result.stdout.strip():
         return None
     return Path(result.stdout.strip()).resolve()
@@ -151,13 +210,16 @@ def git_common_dir(path):
 def is_isolated_worktree(workspace, main_path):
     if not workspace or not workspace.is_dir() or workspace.resolve() == main_path.resolve():
         return False
-    result = subprocess.run(
-        ["git", "rev-parse", "--is-inside-work-tree"],
-        cwd=workspace,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            cwd=workspace,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return False
     return (
         result.returncode == 0
         and result.stdout.strip() == "true"
@@ -174,7 +236,7 @@ def probe(binary, event_id):
     status = command_json(binary, "status", "--json")
 
     project = command_json(binary, "project", "get", AO_PROJECT_ID, "--json")
-    if project is None or project.get("project", {}).get("repo") != f"https://github.com/{EXPECTED_REPOSITORY}.git":
+    if not isinstance(project, dict) or not isinstance(project.get("project"), dict) or project["project"].get("repo") != f"https://github.com/{EXPECTED_REPOSITORY}.git":
         return "AO_PROJECT_MISMATCH", None, marker, None, None
     main_path = project_path(project)
     main_head = clean_head(main_path) if main_path else None
@@ -184,8 +246,11 @@ def probe(binary, event_id):
     agents = command_json(binary, "agent", "ls", "--json")
     if agents is None or not find_authorized_codex(agents):
         return "CODEX_NOT_AUTHORIZED", None, marker, main_head, None
+    if not has_chatgpt_login():
+        return "CODEX_CHATGPT_LOGIN_UNVERIFIED", None, marker, main_head, None
+    if not catalog_has_luna(codex_model_catalog(status)):
+        return "LUNA_MODEL_CATALOG_UNAVAILABLE", None, marker, main_head, None
 
-    before = session_ids(command_json(binary, "session", "ls", "--project", AO_PROJECT_ID, "--include-terminated", "--json"))
     session_name = f"pre003-{marker.rsplit('_', 1)[-1][:12]}"
     prompt = (
         "PRE-003 read-only transport probe. Do not edit files, commit, push, open a PR, or merge. "
@@ -209,11 +274,9 @@ def probe(binary, event_id):
     ):
         return "LUNA_MODEL_UNAVAILABLE", None, marker, main_head, None
 
-    after = session_ids(command_json(binary, "session", "ls", "--project", AO_PROJECT_ID, "--include-terminated", "--json"))
-    created = after - before
-    if len(created) != 1:
+    session_id = session_id_by_name(api_document(status, "/api/v1/sessions"), session_name)
+    if session_id is None:
         return "AO_SESSION_ID_UNAVAILABLE", None, marker, main_head, None
-    session_id = created.pop()
     workspace = session_workspace(status, session_id)
     if not is_isolated_worktree(workspace, main_path):
         command_success(binary, "session", "kill", session_id, "--project", AO_PROJECT_ID)
@@ -221,17 +284,20 @@ def probe(binary, event_id):
 
     try:
         for _ in range(60):
-            session = command_json(binary, "session", "get", session_id, "--project", AO_PROJECT_ID, "--json")
+            session = session_view(status, session_id)
             if session is None:
                 return "AO_SESSION_UNOBSERVABLE", session_id, marker, main_head, str(workspace)
             if not is_luna_session(session):
                 return "LUNA_MODEL_UNVERIFIED", session_id, marker, main_head, str(workspace)
-            if has_exact_session_result(session, marker):
+            snapshot = conversation_snapshot(status, session_id)
+            if not is_bound_luna_conversation(snapshot, session_id):
+                return "LUNA_MODEL_UNVERIFIED", session_id, marker, main_head, str(workspace)
+            if has_exact_session_result(snapshot, marker):
                 final_head = clean_head(main_path)
                 if final_head != main_head:
                     return "CONTROL_PLANE_MAIN_CHANGED", session_id, marker, main_head, str(workspace)
                 return "PASS", session_id, marker, main_head, str(workspace)
-            state = session.get("session", {}).get("status")
+            state = session["session"].get("status")
             if state == "terminated":
                 return "RESULT_MARKER_UNOBSERVABLE", session_id, marker, main_head, str(workspace)
             time.sleep(5)
