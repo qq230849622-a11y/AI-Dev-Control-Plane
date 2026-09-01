@@ -112,5 +112,6 @@ def test_pre004_workflow_is_strictly_bound_to_owner_issue_and_windows_runner():
     assert "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683" in workflow
     assert "shell: powershell" in workflow
     assert "if: always()" in workflow
+    assert "DISPATCHER_NOT_COMPLETED" in workflow
     assert "pull_request:" not in workflow
     assert "pull_request_target:" not in workflow
