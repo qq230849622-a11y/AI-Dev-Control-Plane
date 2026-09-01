@@ -151,7 +151,7 @@ def test_installed_console_cli_accepts_valid_task(tmp_path):
     scripts_directory = virtual_environment / ("Scripts" if os.name == "nt" else "bin")
     virtual_python = scripts_directory / ("python.exe" if os.name == "nt" else "python")
     installation = subprocess.run(
-        [str(virtual_python), "-m", "pip", "install", "--no-deps", "--no-build-isolation", "."],
+        [str(virtual_python), "-m", "pip", "install", "--no-deps", "."],
         cwd=project_copy,
         capture_output=True,
         text=True,
