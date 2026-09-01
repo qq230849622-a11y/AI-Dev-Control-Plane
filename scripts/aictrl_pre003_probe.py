@@ -177,15 +177,17 @@ def codex_model_catalog(status):
 
 
 def is_bound_luna_conversation(snapshot, session_id):
-    # Model proof is authoritative on SessionView.model.  The conversation
-    # snapshot is a separate durable transcript surface and is used here only
-    # to bind the provider output to this exact Codex session.  Requiring the
-    # snapshot's next-turn settings.model duplicates the model gate and can be
-    # unset/changed independently of the already-resolved spawn model.
+    # Runtime diagnostic evidence from AO v0.12.10 showed that the terminated
+    # SessionView can expose an empty `model` even though this exact bound Codex
+    # conversation reports `settings.model = gpt-5.6-luna`.  Keep session
+    # identity/harness proof separate, and use the provider conversation's
+    # selected model as the explicit runtime model proof.
     return (
         isinstance(snapshot, dict)
         and snapshot.get("sessionId") == session_id
         and snapshot.get("harness") == "codex"
+        and isinstance(snapshot.get("settings"), dict)
+        and snapshot["settings"].get("model") == EXPECTED_MODEL
     )
 
 
