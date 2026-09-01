@@ -42,8 +42,7 @@ Requires Python 3.9+.
 ~~~sh
 python -m venv .venv
 . .venv/bin/activate
-python -m pip install -e .
-python -m pip install pytest
+python -m pip install -e ".[test]"
 
 aictrl --version
 aictrl validate path/to/envelope.json
@@ -64,7 +63,6 @@ described in [Architecture](docs/ARCHITECTURE.md).
 
 Runnable sanitized examples are in [examples](examples). They are fixtures for
 schema validation, not executable production tasks.
-
 
 The canonical contracts live in [schemas/v1](schemas/v1). Every envelope
 declares a protocol and explicit machine identity. Strict schemas reject unknown
