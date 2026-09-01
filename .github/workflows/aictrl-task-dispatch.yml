@@ -47,7 +47,7 @@ jobs:
           PYTHONIOENCODING: 'utf-8'
         shell: powershell
         run: >-
-          python scripts/aictrl_task_dispatch.py
+          python scripts/aictrl_task_dispatch_bootstrap.py
           --event "$env:GITHUB_EVENT_PATH"
           --result "$env:RUNNER_TEMP\aictrl-task-result.txt"
 
