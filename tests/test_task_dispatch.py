@@ -1,5 +1,8 @@
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -96,6 +99,18 @@ def test_scope_verification_requires_allowed_and_not_forbidden_paths():
             dispatch.verify_scope(paths, task)
 
 
+def test_rename_aware_scope_verification_rejects_forbidden_source(monkeypatch):
+    task = task_document()
+    task["allowed_scope"] = ["src/aictrl/**"]
+    task["forbidden_scope"] = ["schemas/v1/**"]
+    calls = []
+    monkeypatch.setattr(dispatch, "git", lambda _, *args, **__: calls.append(args) or "schemas/v1/task.schema.json\nsrc/aictrl/task.py\n")
+    paths = dispatch.worker_changed_paths("workspace", SimpleNamespace(default_branch="master"))
+    assert "--no-renames" in calls[0]
+    with pytest.raises(dispatch.DispatchFailure, match="WORKER_FORBIDDEN_SCOPE"):
+        dispatch.verify_scope(paths, task)
+
+
 def test_final_provider_result_is_delimited_valid_and_bound_to_final_message():
     result = result_document()
     text = f"{dispatch.RESULT_BEGIN}\n{json.dumps(result)}\n{dispatch.RESULT_END}"
@@ -120,6 +135,26 @@ def test_conversation_settings_bind_model_and_reasoning_before_brief(monkeypatch
     assert calls[0][1] == {"method": "PATCH", "payload": {"model": "gpt-5.6-terra", "reasoningEffort": "medium"}}
 
 
+def test_direct_script_entry_bootstraps_repo_src_without_pythonpath(tmp_path):
+    environment = os.environ.copy()
+    environment.pop("PYTHONPATH", None)
+    script = Path(__file__).parents[1] / "scripts" / "aictrl_task_dispatch.py"
+    result = subprocess.run([sys.executable, str(script), "--help"], cwd=tmp_path, env=environment, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert "--event" in result.stdout and "--result" in result.stdout
+
+
+def test_target_repository_gh_calls_clear_actions_tokens(monkeypatch):
+    calls = []
+    monkeypatch.setenv("GH_TOKEN", "controller-token")
+    monkeypatch.setenv("GITHUB_TOKEN", "controller-token")
+    monkeypatch.setattr(dispatch, "run", lambda command, **kwargs: calls.append((command, kwargs.get("env"))) or SimpleNamespace(returncode=0, stdout="[]"))
+    dispatch.github_json(["issue", "view", "20"], "ISSUE_LOOKUP_FAILED")
+    dispatch.github_json(["pr", "list"], "PR_LOOKUP_FAILED", target_repository=True)
+    assert calls[0][1] is None
+    assert "GH_TOKEN" not in calls[1][1] and "GITHUB_TOKEN" not in calls[1][1]
+
+
 def test_worker_spawn_is_chat_mode_with_model_but_without_an_initial_task_turn(monkeypatch):
     commands = []
     monkeypatch.setattr(dispatch, "run", lambda command, **_: commands.append(command) or SimpleNamespace(returncode=0, stdout="spawned session session-1 (chat)"))
@@ -127,6 +162,21 @@ def test_worker_spawn_is_chat_mode_with_model_but_without_an_initial_task_turn(m
     assert "--prompt" not in commands[0]
     assert commands[0][commands[0].index("--model") + 1] == "gpt-5.6-terra"
     assert commands[0][commands[0].index("--mode") + 1] == "chat"
+
+
+def test_worker_session_name_is_deterministic_and_limited_to_twenty_characters():
+    assert dispatch.worker_session_name("CTRL-PROD-001") == "aictrl-ctrl-prod-001"
+    long_task_id = "CTRL-" + "X" * 80
+    name = dispatch.worker_session_name(long_task_id)
+    assert len(name) <= 20
+    assert name == dispatch.worker_session_name(long_task_id)
+    assert name != dispatch.worker_session_name("CTRL-" + "Y" * 80)
+
+
+def test_worker_brief_leaves_canonical_testing_policy_to_controller():
+    brief = dispatch.worker_brief(task_document(), "aictrl/task", "master")
+    assert "Run the task testing_policy commands" not in brief
+    assert "controller owns the canonical testing_policy" in brief
 
 
 def test_pr_metadata_requires_final_worker_head_and_no_auto_merge():
@@ -148,6 +198,18 @@ def test_session_cleanup_fails_closed_on_unexpected_error(monkeypatch):
     assert dispatch.cleanup_session_confirmed("ao.exe", {"port": 1}, "session-1", "project-1") is False
 
 
+def test_unexpected_post_spawn_failure_still_runs_cleanup_and_cleanup_overrides(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(dispatch, "cleanup_session_confirmed", lambda *args: calls.append(args) or True)
+    result_path = tmp_path / "result.txt"
+    assert dispatch.finish_execution(result_path, "UNEXPECTED_RUNTIME_ERROR", "", "ao.exe", {"port": 1}, "session-1", "project-1") == 1
+    assert calls == [("ao.exe", {"port": 1}, "session-1", "project-1")]
+    assert "UNEXPECTED_RUNTIME_ERROR" in result_path.read_text(encoding="utf-8")
+    monkeypatch.setattr(dispatch, "cleanup_session_confirmed", lambda *args: False)
+    assert dispatch.finish_execution(result_path, "UNEXPECTED_RUNTIME_ERROR", "", "ao.exe", {"port": 1}, "session-1", "project-1") == 1
+    assert "SESSION_CLEANUP_FAILED" in result_path.read_text(encoding="utf-8")
+
+
 def test_review_event_is_schema_valid_and_carries_controller_evidence():
     task = task_document()
     event = dispatch.review_event(task, "event-2", {"number": 8, "url": "https://example.test/pr/8"}, "a" * 40, "gpt-5.6-terra", "medium", "session-1")
@@ -162,6 +224,8 @@ def test_generic_workflow_is_issue_comment_only_and_initializes_evidence_first()
     assert "github.event.issue.pull_request == null" in workflow
     assert "runs-on: [self-hosted, Windows, X64, aictrl-win]" in workflow
     assert "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683" in workflow
-    assert "GH_TOKEN:" not in workflow
-    assert "permissions:\n  contents: read" in workflow
+    assert workflow.count("GH_TOKEN: ${{ github.token }}") == 2
+    assert "group: aictrl-task-dispatch-ai-dev-control-plane" in workflow
+    assert "github.event.comment.id" not in workflow
+    assert "permissions:\n  contents: read\n  issues: write" in workflow
     assert workflow.index("Initialize bounded failure evidence") < workflow.index("Check out trusted default branch")

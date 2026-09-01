@@ -6,9 +6,10 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 concurrency:
-  group: aictrl-task-dispatch-${{ github.event.comment.id }}
+  group: aictrl-task-dispatch-ai-dev-control-plane
   cancel-in-progress: false
 
 jobs:
@@ -40,6 +41,8 @@ jobs:
 
       - name: Dispatch one bounded AICTRL task
         id: dispatch
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: powershell
         run: >-
           python scripts/aictrl_task_dispatch.py
@@ -48,6 +51,8 @@ jobs:
 
       - name: Post controller evidence
         if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: powershell
         run: |
           $result = "$env:RUNNER_TEMP\aictrl-task-result.txt"

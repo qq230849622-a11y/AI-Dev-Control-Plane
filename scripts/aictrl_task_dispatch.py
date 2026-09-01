@@ -7,6 +7,7 @@ and required tests.
 
 import argparse
 import fnmatch
+import hashlib
 import json
 import os
 import re
@@ -19,6 +20,11 @@ from pathlib import Path, PurePosixPath
 from urllib.error import URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+SOURCE_DIRECTORY = REPOSITORY_ROOT / "src"
+if str(SOURCE_DIRECTORY) not in sys.path:
+    sys.path.insert(0, str(SOURCE_DIRECTORY))
 
 from aictrl.registry import RegistryError, load_registry
 from aictrl.validator import validate_document
@@ -46,7 +52,7 @@ class DispatchFailure(RuntimeError):
         self.code = code
 
 
-def run(command, *, cwd=None, timeout=120, shell=False):
+def run(command, *, cwd=None, timeout=120, shell=False, env=None):
     try:
         return subprocess.run(
             command,
@@ -56,6 +62,7 @@ def run(command, *, cwd=None, timeout=120, shell=False):
             check=False,
             timeout=timeout,
             shell=shell,
+            env=env,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise DispatchFailure("PROCESS_EXECUTION_FAILED") from exc
@@ -75,8 +82,16 @@ def normalized_repo_url(value):
     return value.rstrip("/").removesuffix(".git").lower() if isinstance(value, str) else ""
 
 
-def github_json(arguments, code):
-    result = run(["gh", *arguments], timeout=60)
+def host_gh_environment():
+    environment = os.environ.copy()
+    environment.pop("GH_TOKEN", None)
+    environment.pop("GITHUB_TOKEN", None)
+    return environment
+
+
+def github_json(arguments, code, *, target_repository=False):
+    environment = host_gh_environment() if target_repository else None
+    result = run(["gh", *arguments], timeout=60, env=environment)
     if result.returncode != 0:
         raise DispatchFailure(code)
     try:
@@ -212,6 +227,17 @@ def deterministic_branch(task_id):
     return f"aictrl/{task_id.lower()}"
 
 
+def worker_session_name(task_id):
+    if not isinstance(task_id, str) or not TASK_ID_PATTERN.fullmatch(task_id):
+        raise DispatchFailure("TASK_ID_INVALID")
+    normalized = task_id.lower()
+    prefix = "aictrl-"
+    if len(prefix) + len(normalized) <= 20:
+        return prefix + normalized
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:8]
+    return f"{prefix}{normalized[:4]}-{digest}"
+
+
 def ao_binary():
     configured = os.environ.get("AO_BIN")
     if configured:
@@ -338,7 +364,7 @@ def reject_existing_artifacts(main_path, task, branch):
         raise DispatchFailure("REMOTE_BRANCH_CHECK_FAILED")
     if remote.stdout.strip():
         raise DispatchFailure("REMOTE_BRANCH_EXISTS")
-    prs = github_json(["pr", "list", "--repo", task["repo"], "--head", branch, "--state", "all", "--json", "number"], "PR_PRECHECK_FAILED")
+    prs = github_json(["pr", "list", "--repo", task["repo"], "--head", branch, "--state", "all", "--json", "number"], "PR_PRECHECK_FAILED", target_repository=True)
     if not isinstance(prs, list):
         raise DispatchFailure("PR_PRECHECK_FAILED")
     if prs:
@@ -370,7 +396,8 @@ def worker_brief(task, branch, base_branch):
         f"You are already in an AO-owned isolated worktree on branch {branch}.",
         f"Create exactly one open, non-draft PR from {branch} to {base_branch}; never merge it.",
         "Make no change outside allowed_scope and no change matching forbidden_scope.",
-        "Run the task testing_policy commands, commit and push without force/reset/rebase, then leave the worktree clean.",
+        "Run only targeted checks needed to implement or debug, then commit and push without force/reset/rebase and leave the worktree clean.",
+        "The controller owns the canonical testing_policy as its post-worker gate.",
         "Do not start another agent, change model, use Goal mode, or perform any follow-on task.",
         "Your final provider message must contain exactly this delimited JSON object and no other text:",
         RESULT_BEGIN,
@@ -487,6 +514,18 @@ def verify_scope(paths, task):
             raise DispatchFailure("WORKER_SCOPE_VIOLATION")
 
 
+def worker_changed_paths(workspace, binding):
+    output = git(
+        workspace,
+        "diff",
+        "--name-only",
+        "--no-renames",
+        f"origin/{binding.default_branch}...HEAD",
+        code="WORKER_DIFF_FAILED",
+    )
+    return [line.strip() for line in output.splitlines() if line.strip()]
+
+
 def verify_worker_pr(workspace, main_path, binding, task, branch, result):
     if git(main_path, "rev-parse", "HEAD", code="MAIN_HEAD_FAILED") != task["head_sha"] or git(main_path, "status", "--porcelain", code="MAIN_STATUS_FAILED"):
         raise DispatchFailure("MAIN_CHANGED")
@@ -498,17 +537,17 @@ def verify_worker_pr(workspace, main_path, binding, task, branch, result):
     remote = run(["git", "ls-remote", "--heads", "origin", branch], cwd=workspace)
     if remote.returncode != 0 or remote.stdout.strip().split(maxsplit=1)[0:1] != [worker_head]:
         raise DispatchFailure("REMOTE_BRANCH_HEAD_MISMATCH")
-    prs = github_json(["pr", "list", "--repo", task["repo"], "--head", branch, "--state", "all", "--json", "number,url,isDraft,state,headRefName,baseRefName,headRefOid,autoMergeRequest"], "PR_LOOKUP_FAILED")
+    prs = github_json(["pr", "list", "--repo", task["repo"], "--head", branch, "--state", "all", "--json", "number,url,isDraft,state,headRefName,baseRefName,headRefOid,autoMergeRequest"], "PR_LOOKUP_FAILED", target_repository=True)
     if not isinstance(prs, list) or len(prs) != 1:
         raise DispatchFailure("PR_COUNT_MISMATCH")
     pr = prs[0]
     verify_pr_metadata(pr, branch, binding.default_branch, worker_head)
-    git_paths = [line.strip() for line in git(workspace, "diff", "--name-only", f"origin/{binding.default_branch}...HEAD", code="WORKER_DIFF_FAILED").splitlines() if line.strip()]
-    pr_diff = run(["gh", "pr", "diff", str(pr["number"]), "--repo", task["repo"], "--name-only"], timeout=60)
+    git_paths = worker_changed_paths(workspace, binding)
+    pr_diff = run(["gh", "pr", "diff", str(pr["number"]), "--repo", task["repo"], "--name-only"], timeout=60, env=host_gh_environment())
     if pr_diff.returncode != 0:
         raise DispatchFailure("PR_DIFF_LOOKUP_FAILED")
     pr_paths = [line.strip() for line in pr_diff.stdout.splitlines() if line.strip()]
-    if set(git_paths) != set(pr_paths):
+    if not set(pr_paths).issubset(set(git_paths)):
         raise DispatchFailure("PR_CHANGESET_MISMATCH")
     verify_scope(git_paths, task)
     return pr, worker_head
@@ -586,12 +625,24 @@ def matching_dispatch_comments(comments, event_id):
     return matches
 
 
+def finish_execution(result_path, failure, evidence, binary, status, session_id, project_id):
+    if session_id:
+        if binary is None or status is None or not project_id or not cleanup_session_confirmed(binary, status, session_id, project_id):
+            failure = "SESSION_CLEANUP_FAILED"
+    if failure:
+        write_failure(result_path, failure, session_id)
+        return 1
+    Path(result_path).write_text(evidence, encoding="utf-8")
+    return 0
+
+
 def execute(event_path, result_path):
     session_id = ""
     binary = None
     status = None
     project_id = ""
-    task = None
+    failure = None
+    evidence = ""
     try:
         dispatch, issue_number, comment_id = admit_event(read_event(event_path))
         issue = github_json(["issue", "view", str(issue_number), "--repo", CONTROLLER_REPOSITORY, "--json", "body,author"], "ISSUE_LOOKUP_FAILED")
@@ -621,7 +672,7 @@ def execute(event_path, result_path):
         catalog = api_document(status, f"/api/v1/agents/codex/models?projectId={quote(project_id, safe='')}")
         if not isinstance(catalog, dict) or not any(isinstance(item, dict) and item.get("id") == model for item in catalog.get("models", [])):
             raise DispatchFailure("MODEL_CATALOG_UNAVAILABLE")
-        session_id = spawn_worker(binary, project_id, issue_number, model, branch, f"aictrl-{task['task_id'].lower()}")
+        session_id = spawn_worker(binary, project_id, issue_number, model, branch, worker_session_name(task["task_id"]))
         workspace = workspace_path(status, session_id)
         verify_isolated_workspace(workspace, main_path)
         set_conversation_settings(status, session_id, model, task["reasoning"])
@@ -631,23 +682,12 @@ def execute(event_path, result_path):
         run_testing_policy(workspace, task)
         if defender_fingerprint() != defender_before:
             raise DispatchFailure("DEFENDER_NEW_DETECTION")
-        if not cleanup_session_confirmed(binary, status, session_id, project_id):
-            raise DispatchFailure("SESSION_CLEANUP_FAILED")
-        Path(result_path).write_text(json.dumps(review_event(task, dispatch["event_id"], pr, worker_head, model, task["reasoning"], session_id), sort_keys=True) + "\n", encoding="utf-8")
-        return 0
+        evidence = json.dumps(review_event(task, dispatch["event_id"], pr, worker_head, model, task["reasoning"], session_id), sort_keys=True) + "\n"
     except DispatchFailure as exc:
-        if session_id and binary is not None and status is not None and project_id:
-            if not cleanup_session_confirmed(binary, status, session_id, project_id):
-                exc = DispatchFailure("SESSION_CLEANUP_FAILED")
-        write_failure(result_path, exc.code, session_id)
-        return 1
+        failure = exc.code
     except Exception:
-        if session_id and binary is not None and status is not None and project_id:
-            if not cleanup_session_confirmed(binary, status, session_id, project_id):
-                write_failure(result_path, "SESSION_CLEANUP_FAILED", session_id)
-                return 1
-        write_failure(result_path, "UNEXPECTED_RUNTIME_ERROR", session_id)
-        return 1
+        failure = "UNEXPECTED_RUNTIME_ERROR"
+    return finish_execution(result_path, failure, evidence, binary, status, session_id, project_id)
 
 
 def main(argv=None):
