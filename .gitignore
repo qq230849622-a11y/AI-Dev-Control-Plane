@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*.json
+service-account*.json
+
+# Agent Orchestrator and runner state
+.ai-control/local/
+.ai-control/state/
+.aictrl/
+ao-state/
+runner-temp/
+worktrees/
+
+# Local outputs and evidence
+*.log
+*.out
+*.result.json
+artifacts/
+reports/
