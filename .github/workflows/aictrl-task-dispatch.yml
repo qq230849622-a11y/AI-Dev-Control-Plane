@@ -1,0 +1,61 @@
+name: AICTRL task dispatcher
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: aictrl-task-dispatch-ai-dev-control-plane
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    if: >-
+      github.repository == 'qq230849622-a11y/AI-Dev-Control-Plane' &&
+      github.actor == 'qq230849622-a11y' &&
+      github.event.action == 'created' &&
+      github.event.issue.pull_request == null &&
+      startsWith(github.event.comment.body, 'AICTRL_DISPATCH_V1')
+    runs-on: [self-hosted, Windows, X64, aictrl-win]
+    timeout-minutes: 45
+    steps:
+      - name: Initialize bounded failure evidence
+        shell: powershell
+        run: |
+          @"
+          AICTRL_DISPATCH_FAILURE_V1
+          reason: DISPATCHER_NOT_COMPLETED
+          session_id:
+          status: FAIL
+          "@ | Set-Content -LiteralPath "$env:RUNNER_TEMP\aictrl-task-result.txt" -Encoding utf8
+
+      - name: Check out trusted default branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Dispatch one bounded AICTRL task
+        id: dispatch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: powershell
+        run: >-
+          python scripts/aictrl_task_dispatch.py
+          --event "$env:GITHUB_EVENT_PATH"
+          --result "$env:RUNNER_TEMP\aictrl-task-result.txt"
+
+      - name: Post controller evidence
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: powershell
+        run: |
+          $result = "$env:RUNNER_TEMP\aictrl-task-result.txt"
+          if (!(Test-Path -LiteralPath $result)) { throw "AICTRL controller evidence is missing." }
+          gh issue comment ${{ github.event.issue.number }} --repo qq230849622-a11y/AI-Dev-Control-Plane --body-file $result
+          if ('${{ steps.dispatch.outcome }}' -ne 'success') { exit 1 }
