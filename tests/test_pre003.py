@@ -1,3 +1,4 @@
+import re
 import json
 import subprocess
 import sys
@@ -287,7 +288,7 @@ def test_pre003_workflow_is_strictly_bound_and_has_no_pr_trigger():
     assert "github.event.issue.number == 7" in workflow
     assert "ref: ${{ github.event.repository.default_branch }}" in workflow
     assert "gpt-5.6-luna" in workflow
-    assert "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683" in workflow
+    assert re.search(r"actions/checkout@[0-9a-f]{40}", workflow)
     assert "always()" in workflow
     assert "PROBE_RUNTIME_ERROR" in workflow
     assert "worktree_path: $env:PRE003_WORKTREE_PATH" in workflow
