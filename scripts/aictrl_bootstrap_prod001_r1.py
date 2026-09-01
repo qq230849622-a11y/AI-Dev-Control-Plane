@@ -199,6 +199,48 @@ def claim_pr(binary, session_id):
         fail("PR_CLAIM_UNVERIFIED")
 
 
+def checkout_claimed_pr_branch(workspace):
+    """Compatibility shim for AO v0.12.10, whose PR claim does not checkout the PR branch."""
+    remote = base.run(["git", "ls-remote", "--heads", "origin", BRANCH], cwd=workspace)
+    if remote.returncode != 0:
+        fail("REMOTE_PR_BRANCH_LOOKUP_FAILED")
+    parts = remote.stdout.strip().split()
+    if len(parts) < 2 or parts[0] != EXPECTED_HEAD:
+        fail("REMOTE_PR_HEAD_MISMATCH")
+    fetched = base.run(
+        [
+            "git",
+            "fetch",
+            "origin",
+            f"refs/heads/{BRANCH}:refs/remotes/origin/{BRANCH}",
+        ],
+        cwd=workspace,
+        timeout=120,
+    )
+    if fetched.returncode != 0:
+        fail("REMOTE_PR_BRANCH_FETCH_FAILED")
+    local = base.run(["git", "show-ref", "--verify", f"refs/heads/{BRANCH}"], cwd=workspace)
+    if local.returncode == 0:
+        local_head = base.git(workspace, "rev-parse", f"refs/heads/{BRANCH}")
+        if local_head != EXPECTED_HEAD:
+            fail("LOCAL_PR_BRANCH_HEAD_MISMATCH")
+        switched = base.run(["git", "switch", BRANCH], cwd=workspace, timeout=60)
+    else:
+        switched = base.run(
+            ["git", "switch", "--create", BRANCH, "--track", f"origin/{BRANCH}"],
+            cwd=workspace,
+            timeout=60,
+        )
+    if switched.returncode != 0:
+        fail("PR_BRANCH_CHECKOUT_FAILED")
+    if base.git(workspace, "branch", "--show-current") != BRANCH:
+        fail("PR_BRANCH_CHECKOUT_UNVERIFIED")
+    if base.git(workspace, "rev-parse", "HEAD") != EXPECTED_HEAD:
+        fail("PR_BRANCH_HEAD_UNVERIFIED")
+    if base.git(workspace, "status", "--porcelain"):
+        fail("PR_BRANCH_DIRTY_AFTER_CHECKOUT")
+
+
 def set_settings(status, session_id):
     path = f"/api/v1/sessions/{quote(session_id, safe='')}/conversation/settings"
     if api_patch(status, path, {"model": MODEL, "reasoningEffort": REASONING}) is None:
@@ -355,8 +397,7 @@ def execute(event_path, result_path):
         claim_pr(binary, session_id)
         workspace = base.workspace_path(status, session_id)
         hard.verify_isolated_workspace(workspace, main_path)
-        if base.git(workspace, "branch", "--show-current") != BRANCH:
-            fail("PR_CLAIM_BRANCH_MISMATCH")
+        checkout_claimed_pr_branch(workspace)
         set_settings(status, session_id)
         send_prompt(binary, session_id)
         wait_ready(status, session_id)
