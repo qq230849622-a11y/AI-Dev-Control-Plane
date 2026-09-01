@@ -146,7 +146,10 @@ def has_chatgpt_login():
         )
     except OSError:
         return False
-    return result.returncode == 0 and is_chatgpt_login_status(result.stdout)
+    return result.returncode == 0 and (
+        is_chatgpt_login_status(result.stdout)
+        or is_chatgpt_login_status(result.stderr)
+    )
 
 
 def api_document(status, path):
