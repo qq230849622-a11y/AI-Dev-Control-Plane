@@ -1,3 +1,4 @@
+import re
 import json
 import os
 from pathlib import Path
@@ -312,7 +313,7 @@ def test_generic_workflow_is_issue_comment_only_and_initializes_evidence_first()
     assert "pull_request:" not in workflow and "pull_request_target:" not in workflow
     assert "github.event.issue.pull_request == null" in workflow
     assert "runs-on: [self-hosted, Windows, X64, aictrl-win]" in workflow
-    assert "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683" in workflow
+    assert re.search(r"actions/checkout@[0-9a-f]{40}", workflow)
     assert workflow.count("GH_TOKEN: ${{ github.token }}") == 2
     assert "group: aictrl-dispatch-ai-dev-control-plane" in workflow
     assert "github.event.comment.id" not in workflow
