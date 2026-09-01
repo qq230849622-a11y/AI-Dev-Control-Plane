@@ -1,0 +1,13 @@
+{
+  "protocol": "AICTRL_DECISION_V1",
+  "project_key": "AI_DEV_CONTROL_PLANE",
+  "repo": "qq230849622-a11y/AI-Dev-Control-Plane",
+  "task_id": "EXAMPLE-001",
+  "head_sha": "e2663570e48dcdaf85ec7a9e9d7ed703e14c88cc",
+  "decision_id": "example-decision-001",
+  "actor": "maintainer",
+  "decision_type": "SCOPE",
+  "status": "APPROVED",
+  "decision": "Validate examples only.",
+  "rationale": "The example is intentionally non-executable."
+}
