@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -119,6 +120,34 @@ def test_conversation_settings_bind_model_and_reasoning_before_brief(monkeypatch
     assert calls[0][1] == {"method": "PATCH", "payload": {"model": "gpt-5.6-terra", "reasoningEffort": "medium"}}
 
 
+def test_worker_spawn_is_chat_mode_with_model_but_without_an_initial_task_turn(monkeypatch):
+    commands = []
+    monkeypatch.setattr(dispatch, "run", lambda command, **_: commands.append(command) or SimpleNamespace(returncode=0, stdout="spawned session session-1 (chat)"))
+    assert dispatch.spawn_worker("ao.exe", "project-1", 20, "gpt-5.6-terra", "aictrl/task", "task") == "session-1"
+    assert "--prompt" not in commands[0]
+    assert commands[0][commands[0].index("--model") + 1] == "gpt-5.6-terra"
+    assert commands[0][commands[0].index("--mode") + 1] == "chat"
+
+
+def test_pr_metadata_requires_final_worker_head_and_no_auto_merge():
+    pr = {
+        "number": 8, "url": "https://example.test/pr/8", "state": "OPEN", "isDraft": False,
+        "headRefName": "aictrl/task", "baseRefName": "master", "headRefOid": "a" * 40,
+        "autoMergeRequest": None,
+    }
+    dispatch.verify_pr_metadata(pr, "aictrl/task", "master", "a" * 40)
+    for key, value in (("headRefOid", "b" * 40), ("autoMergeRequest", {"enabledAt": "now"})):
+        invalid = dict(pr)
+        invalid[key] = value
+        with pytest.raises(dispatch.DispatchFailure, match="PR_STATE_MISMATCH"):
+            dispatch.verify_pr_metadata(invalid, "aictrl/task", "master", "a" * 40)
+
+
+def test_session_cleanup_fails_closed_on_unexpected_error(monkeypatch):
+    monkeypatch.setattr(dispatch, "command_success", lambda *_: (_ for _ in ()).throw(RuntimeError("broken")))
+    assert dispatch.cleanup_session_confirmed("ao.exe", {"port": 1}, "session-1", "project-1") is False
+
+
 def test_review_event_is_schema_valid_and_carries_controller_evidence():
     task = task_document()
     event = dispatch.review_event(task, "event-2", {"number": 8, "url": "https://example.test/pr/8"}, "a" * 40, "gpt-5.6-terra", "medium", "session-1")
@@ -133,4 +162,6 @@ def test_generic_workflow_is_issue_comment_only_and_initializes_evidence_first()
     assert "github.event.issue.pull_request == null" in workflow
     assert "runs-on: [self-hosted, Windows, X64, aictrl-win]" in workflow
     assert "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683" in workflow
+    assert "GH_TOKEN:" not in workflow
+    assert "permissions:\n  contents: read" in workflow
     assert workflow.index("Initialize bounded failure evidence") < workflow.index("Check out trusted default branch")

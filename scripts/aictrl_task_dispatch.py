@@ -498,12 +498,11 @@ def verify_worker_pr(workspace, main_path, binding, task, branch, result):
     remote = run(["git", "ls-remote", "--heads", "origin", branch], cwd=workspace)
     if remote.returncode != 0 or remote.stdout.strip().split(maxsplit=1)[0:1] != [worker_head]:
         raise DispatchFailure("REMOTE_BRANCH_HEAD_MISMATCH")
-    prs = github_json(["pr", "list", "--repo", task["repo"], "--head", branch, "--state", "all", "--json", "number,url,isDraft,state,headRefName,baseRefName"], "PR_LOOKUP_FAILED")
+    prs = github_json(["pr", "list", "--repo", task["repo"], "--head", branch, "--state", "all", "--json", "number,url,isDraft,state,headRefName,baseRefName,headRefOid,autoMergeRequest"], "PR_LOOKUP_FAILED")
     if not isinstance(prs, list) or len(prs) != 1:
         raise DispatchFailure("PR_COUNT_MISMATCH")
     pr = prs[0]
-    if not isinstance(pr, dict) or pr.get("state") != "OPEN" or pr.get("isDraft") is not False or pr.get("headRefName") != branch or pr.get("baseRefName") != binding.default_branch:
-        raise DispatchFailure("PR_STATE_MISMATCH")
+    verify_pr_metadata(pr, branch, binding.default_branch, worker_head)
     git_paths = [line.strip() for line in git(workspace, "diff", "--name-only", f"origin/{binding.default_branch}...HEAD", code="WORKER_DIFF_FAILED").splitlines() if line.strip()]
     pr_diff = run(["gh", "pr", "diff", str(pr["number"]), "--repo", task["repo"], "--name-only"], timeout=60)
     if pr_diff.returncode != 0:
@@ -525,15 +524,33 @@ def run_testing_policy(workspace, task):
 
 
 def cleanup_session_confirmed(binary, status, session_id, project_id):
-    if not command_success(binary, "session", "kill", session_id, "--project", project_id):
+    try:
+        if not command_success(binary, "session", "kill", session_id, "--project", project_id):
+            return False
+        for _ in range(20):
+            document = api_document(status, f"/api/v1/sessions/{quote(session_id, safe='')}")
+            session = document.get("session") if isinstance(document, dict) else None
+            if isinstance(session, dict) and (session.get("status") == "terminated" or session.get("isTerminated") is True):
+                return True
+            time.sleep(0.5)
+    except Exception:
         return False
-    for _ in range(20):
-        document = api_document(status, f"/api/v1/sessions/{quote(session_id, safe='')}")
-        session = document.get("session") if isinstance(document, dict) else None
-        if isinstance(session, dict) and (session.get("status") == "terminated" or session.get("isTerminated") is True):
-            return True
-        time.sleep(0.5)
     return False
+
+
+def verify_pr_metadata(pr, branch, base_branch, worker_head):
+    if (
+        not isinstance(pr, dict)
+        or not isinstance(pr.get("number"), int)
+        or not isinstance(pr.get("url"), str)
+        or pr.get("state") != "OPEN"
+        or pr.get("isDraft") is not False
+        or pr.get("headRefName") != branch
+        or pr.get("baseRefName") != base_branch
+        or pr.get("headRefOid") != worker_head
+        or pr.get("autoMergeRequest") is not None
+    ):
+        raise DispatchFailure("PR_STATE_MISMATCH")
 
 
 def review_event(task, event_id, pr, worker_head, model, reasoning, session_id):
@@ -625,6 +642,10 @@ def execute(event_path, result_path):
         write_failure(result_path, exc.code, session_id)
         return 1
     except Exception:
+        if session_id and binary is not None and status is not None and project_id:
+            if not cleanup_session_confirmed(binary, status, session_id, project_id):
+                write_failure(result_path, "SESSION_CLEANUP_FAILED", session_id)
+                return 1
         write_failure(result_path, "UNEXPECTED_RUNTIME_ERROR", session_id)
         return 1
 
