@@ -1,0 +1,40 @@
+name: Retarget v0.1.0 release
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: write
+
+jobs:
+  retarget:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out release commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.0
+      - name: Retarget release to clean parent
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_MESSAGE: ${{ github.event.head_commit.message }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$HEAD_MESSAGE" != "release: v0.1.0 retarget" ]]; then
+            echo "Not the one-shot retarget commit; skipping."
+            exit 0
+          fi
+          clean_sha="$(git rev-parse HEAD^)"
+          if git ls-tree -r --name-only "$clean_sha" | grep -qx '.github/workflows/publish-release.yml'; then
+            echo "The target commit still contains the one-shot workflow."
+            exit 1
+          fi
+          if gh release view v0.1.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release delete v0.1.0 --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
+          fi
+          notes="$(sed -n '/^## \[0.1.0\]/,$p' CHANGELOG.md)"
+          gh release create v0.1.0 \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$clean_sha" \
+            --title "AI Dev Control Plane v0.1.0" \
+            --notes "$notes"
