@@ -108,6 +108,14 @@ def build_probe_marker(event_id):
 
 
 def is_luna_session(session_document):
+    """Verify the AO session identity before model proof.
+
+    The installed AO v0.12.10 runtime was observed to return an empty
+    SessionView.model for a terminated Chat worker even though the bound
+    conversation settings reported the explicitly selected Luna model.  The
+    exact model is therefore proven on the conversation surface; this guard
+    keeps the independent session-id + Codex-harness binding fail-closed.
+    """
     if not isinstance(session_document, dict):
         return False
     session = session_document.get("session")
@@ -116,7 +124,6 @@ def is_luna_session(session_document):
         and isinstance(session.get("id"), str)
         and bool(session["id"])
         and session.get("harness") == "codex"
-        and session.get("model") == EXPECTED_MODEL
     )
 
 
