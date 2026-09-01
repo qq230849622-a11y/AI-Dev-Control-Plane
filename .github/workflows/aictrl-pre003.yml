@@ -32,14 +32,14 @@ jobs:
       - name: Fetch existing issue comments for idempotency
         env:
           GH_TOKEN: ${{ github.token }}
-        shell: pwsh
+        shell: powershell
         run: >-
           gh api --paginate --slurp "repos/$env:GITHUB_REPOSITORY/issues/7/comments" |
           Set-Content -LiteralPath "$env:RUNNER_TEMP\aictrl-pre003-comments.json" -Encoding utf8
 
       - name: Admit exactly one bound PRE-003 PING
         id: admit
-        shell: pwsh
+        shell: powershell
         run: >-
           python scripts/aictrl_pre003_admit.py
           --event "$env:GITHUB_EVENT_PATH"
@@ -48,19 +48,19 @@ jobs:
 
       - name: Fail closed on an invalid PING
         if: steps.admit.outputs.admitted != 'true'
-        shell: pwsh
+        shell: powershell
         run: >-
           throw "PRE-003 admission rejected: ${{ steps.admit.outputs.reason }}"
 
       - name: Stop on a duplicate PONG
         if: steps.admit.outputs.duplicate == 'true'
-        shell: pwsh
+        shell: powershell
         run: Write-Output 'PRE-003 duplicate event; no AO worker started.'
 
       - name: Run the read-only Luna probe
         id: probe
         if: steps.admit.outputs.admitted == 'true' && steps.admit.outputs.duplicate != 'true'
-        shell: pwsh
+        shell: powershell
         env:
           PRE003_EVENT_ID: ${{ steps.admit.outputs.event_id }}
         run: >-
@@ -78,7 +78,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PRE003_EVENT_ID: ${{ steps.admit.outputs.event_id }}
           PRE003_REASON: ${{ steps.probe.outputs.reason || 'PROBE_RUNTIME_ERROR' }}
-        shell: pwsh
+        shell: powershell
         run: |
           if ([string]::IsNullOrWhiteSpace($env:PRE003_REASON)) {
             $env:PRE003_REASON = 'PROBE_RUNTIME_ERROR'
@@ -105,7 +105,7 @@ jobs:
           PRE003_RESULT_MARKER: ${{ steps.probe.outputs.result_marker }}
           PRE003_MAIN_HEAD: ${{ steps.probe.outputs.main_head }}
           PRE003_WORKTREE_PATH: ${{ steps.probe.outputs.worktree_path }}
-        shell: pwsh
+        shell: powershell
         run: |
           $body = @"
           AICTRL_PRE003_PONG_V1
