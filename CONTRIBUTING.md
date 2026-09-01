@@ -19,13 +19,12 @@ Python 3.9 or newer is supported.
 python -m venv .venv
 . .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -e .
-python -m pip install pytest
+python -m pip install -e ".[test]"
 python -m pytest -q
 ~~~
 
 On Windows PowerShell, activate the environment with
-`.venv\Scripts\Activate.ps1` and use the same install and test commands.
+`.venv\\Scripts\\Activate.ps1` and use the same install and test commands.
 
 ## Pull requests
 
