@@ -49,6 +49,10 @@ aictrl --version
 aictrl validate path/to/envelope.json
 aictrl route --registry .ai-control/projects path/to/envelope.json
 python -m pytest -q
+
+for file in examples/*.json; do
+  aictrl validate "$file"
+done
 ~~~
 
 Validation is local and makes no network calls. The dispatcher integration is
@@ -57,6 +61,10 @@ controller workflow, and the Windows self-hosted Agent Orchestrator runner
 described in [Architecture](docs/ARCHITECTURE.md).
 
 ## Protocol contracts
+
+Runnable sanitized examples are in [examples](examples). They are fixtures for
+schema validation, not executable production tasks.
+
 
 The canonical contracts live in [schemas/v1](schemas/v1). Every envelope
 declares a protocol and explicit machine identity. Strict schemas reject unknown
