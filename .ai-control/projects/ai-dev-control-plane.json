@@ -1,0 +1,8 @@
+{
+  "protocol": "AICTRL_PROJECT_V1",
+  "project_key": "AI_DEV_CONTROL_PLANE",
+  "repo": "qq230849622-a11y/AI-Dev-Control-Plane",
+  "default_branch": "master",
+  "controller_key": "AI_DEV_CONTROL_PLANE_CONTROLLER",
+  "enabled": true
+}
