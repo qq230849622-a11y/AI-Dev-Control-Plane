@@ -13,6 +13,8 @@ jobs:
     steps:
       - name: Check out release commit
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.0
+        with:
+          fetch-depth: 2
       - name: Retarget release to clean parent
         env:
           GH_TOKEN: ${{ github.token }}
@@ -20,7 +22,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "$HEAD_MESSAGE" != "release: v0.1.0 retarget" ]]; then
+          if [[ "$HEAD_MESSAGE" != "release: v0.1.0 retarget retry" ]]; then
             echo "Not the one-shot retarget commit; skipping."
             exit 0
           fi
