@@ -1,0 +1,68 @@
+name: AICTRL PRE-005 residue cleanup
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: aictrl-pre005-maintenance
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    if: >-
+      github.repository == 'qq230849622-a11y/AI-Dev-Control-Plane' &&
+      github.actor == 'qq230849622-a11y' &&
+      github.event.action == 'created' &&
+      github.event.issue.number == 29 &&
+      github.event.issue.pull_request == null &&
+      startsWith(github.event.comment.body, 'AICTRL_PRE005_RESIDUE_CLEANUP_V1')
+    runs-on: [self-hosted, Windows, X64, aictrl-win]
+    timeout-minutes: 10
+    steps:
+      - name: Initialize bounded cleanup result
+        shell: powershell
+        run: |
+          @"
+          AICTRL_PRE005_RESIDUE_CLEANUP_RESULT_V1
+          project_key: AI_DEV_CONTROL_PLANE
+          repo: qq230849622-a11y/AI-Dev-Control-Plane
+          task_id: PRE-005
+          session_id: ai-dev-control-plane-11
+          branch: aictrl/pre-005
+          head_sha: eb20e43f26e7591d07574d0fc9b58526f695351f
+          reason: CLEANUP_NOT_COMPLETED
+          status: FAIL
+          "@ | Set-Content -LiteralPath "$env:RUNNER_TEMP\aictrl-pre005-residue-cleanup.txt" -Encoding utf8
+
+      - name: Check out trusted default branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Reclaim only verified PRE-005 residue
+        id: cleanup
+        env:
+          PYTHONUTF8: '1'
+          PYTHONIOENCODING: 'utf-8'
+        shell: powershell
+        run: >-
+          python -m scripts.aictrl_pre005_residue_cleanup
+          --event "$env:GITHUB_EVENT_PATH"
+          --result "$env:RUNNER_TEMP\aictrl-pre005-residue-cleanup.txt"
+
+      - name: Post bounded cleanup result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: powershell
+        run: |
+          $result = "$env:RUNNER_TEMP\aictrl-pre005-residue-cleanup.txt"
+          if (!(Test-Path -LiteralPath $result)) { throw "PRE-005 residue cleanup result missing." }
+          gh issue comment 29 --repo qq230849622-a11y/AI-Dev-Control-Plane --body-file $result
+          if ('${{ steps.cleanup.outcome }}' -ne 'success') { exit 1 }
