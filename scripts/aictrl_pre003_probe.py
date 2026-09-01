@@ -177,12 +177,15 @@ def codex_model_catalog(status):
 
 
 def is_bound_luna_conversation(snapshot, session_id):
+    # Model proof is authoritative on SessionView.model.  The conversation
+    # snapshot is a separate durable transcript surface and is used here only
+    # to bind the provider output to this exact Codex session.  Requiring the
+    # snapshot's next-turn settings.model duplicates the model gate and can be
+    # unset/changed independently of the already-resolved spawn model.
     return (
         isinstance(snapshot, dict)
         and snapshot.get("sessionId") == session_id
         and snapshot.get("harness") == "codex"
-        and isinstance(snapshot.get("settings"), dict)
-        and snapshot["settings"].get("model") == EXPECTED_MODEL
     )
 
 
