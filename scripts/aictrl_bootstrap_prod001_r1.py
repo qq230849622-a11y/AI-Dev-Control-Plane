@@ -21,6 +21,7 @@ BRANCH = "ctrl/prod-001-generic-task-dispatch"
 EXPECTED_HEAD = "53565c28840f3d1cd9585934b319c1d5f9278701"
 SESSION_NAME = "prod001-r1"
 READY_MARKER = "AICTRL_CTRL_PROD001_R1_READY_V1"
+ORIGINAL_BASE = "404bd78c21fa65bc5a0b77e763f1707f9eaa5874"
 ALLOWED_FILES = {
     ".github/workflows/aictrl-task-dispatch.yml",
     "scripts/aictrl_task_dispatch.py",
@@ -142,7 +143,7 @@ def api_patch(status, path, payload):
     return value if isinstance(value, dict) else None
 
 
-def spawn_and_claim(binary):
+def spawn_worker(binary):
     result = base.run(
         [
             str(binary),
@@ -169,7 +170,10 @@ def spawn_and_claim(binary):
     match = re.search(r"spawned session\s+(\S+)\s+\(", result.stdout)
     if not match:
         fail("AO_SESSION_ID_UNAVAILABLE")
-    session_id = match.group(1)
+    return match.group(1)
+
+
+def claim_pr(binary, session_id):
     claim = base.run(
         [
             str(binary),
@@ -185,18 +189,14 @@ def spawn_and_claim(binary):
         timeout=120,
     )
     if claim.returncode != 0:
-        try:
-            base.command_success(binary, "session", "kill", session_id, "--project", PROJECT_ID)
-        finally:
-            fail("PR_CLAIM_FAILED")
+        fail("PR_CLAIM_FAILED")
     try:
         document = json.loads(claim.stdout)
-    except json.JSONDecodeError:
-        fail("PR_CLAIM_UNVERIFIED")
+    except json.JSONDecodeError as exc:
+        raise R1Failure("PR_CLAIM_UNVERIFIED") from exc
     prs = document.get("prs") if isinstance(document, dict) else None
     if not isinstance(prs, list) or len(prs) != 1 or prs[0].get("number") != PR_NUMBER:
         fail("PR_CLAIM_UNVERIFIED")
-    return session_id
 
 
 def set_settings(status, session_id):
@@ -251,10 +251,14 @@ def wait_ready(status, session_id):
     fail("WORKER_TIMEOUT")
 
 
-def verify_after(workspace, main_path):
+def verify_after(workspace, main_path, synced_head):
     if not workspace or not workspace.is_dir():
         fail("WORKSPACE_UNAVAILABLE")
     hard.verify_isolated_workspace(workspace, main_path)
+    if base.git(main_path, "rev-parse", "HEAD") != synced_head:
+        fail("MAIN_CHANGED")
+    if base.git(main_path, "status", "--porcelain"):
+        fail("MAIN_DIRTY_AFTER_WORKER")
     if base.git(workspace, "branch", "--show-current") != BRANCH:
         fail("WORKER_BRANCH_MISMATCH")
     if base.git(workspace, "status", "--porcelain"):
@@ -287,7 +291,7 @@ def verify_after(workspace, main_path):
         fail("PR_STATE_MISMATCH")
     changed = [
         line.strip()
-        for line in base.git(workspace, "diff", "--name-only", "404bd78c21fa65bc5a0b77e763f1707f9eaa5874...HEAD").splitlines()
+        for line in base.git(workspace, "diff", "--name-only", f"{ORIGINAL_BASE}...HEAD").splitlines()
         if line.strip()
     ]
     if not changed or not set(changed).issubset(ALLOWED_FILES):
@@ -341,13 +345,14 @@ def execute(event_path, result_path):
         project = project_doc.get("project") if isinstance(project_doc, dict) else None
         if not isinstance(project, dict):
             fail("AO_PROJECT_UNAVAILABLE")
-        main_path, _ = base.safe_sync_main(project)
+        main_path, synced_head = base.safe_sync_main(project)
         if not base.has_chatgpt_login():
             fail("CODEX_CHATGPT_LOGIN_UNVERIFIED")
         catalog = base.api_document(status, f"/api/v1/agents/codex/models?projectId={PROJECT_ID}")
         if not base.catalog_has_terra(catalog):
             fail("TERRA_MODEL_CATALOG_UNAVAILABLE")
-        session_id = spawn_and_claim(binary)
+        session_id = spawn_worker(binary)
+        claim_pr(binary, session_id)
         workspace = base.workspace_path(status, session_id)
         hard.verify_isolated_workspace(workspace, main_path)
         if base.git(workspace, "branch", "--show-current") != BRANCH:
@@ -355,7 +360,7 @@ def execute(event_path, result_path):
         set_settings(status, session_id)
         send_prompt(binary, session_id)
         wait_ready(status, session_id)
-        worker_head, pr = verify_after(workspace, main_path)
+        worker_head, pr = verify_after(workspace, main_path, synced_head)
         if base.defender_fingerprint() != defender_before:
             fail("DEFENDER_NEW_DETECTION")
     except (R1Failure, base.ProbeFailure) as exc:
