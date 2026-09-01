@@ -54,7 +54,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: powershell
         run: >-
-          python scripts/aictrl_bootstrap_prod001.py
+          python -m scripts.aictrl_bootstrap_prod001
           --event "$env:GITHUB_EVENT_PATH"
           --result "$env:RUNNER_TEMP\aictrl-bootstrap-prod001-result.txt"
 
