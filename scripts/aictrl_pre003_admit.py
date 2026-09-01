@@ -11,7 +11,8 @@ from aictrl.pre003 import admit_issue_comment, has_matching_pong
 
 
 def _comments(path):
-    document = json.loads(Path(path).read_text(encoding="utf-8"))
+    # Windows PowerShell 5.1 writes UTF-8 with a BOM for Set-Content -Encoding utf8.
+    document = json.loads(Path(path).read_text(encoding="utf-8-sig"))
 
     def flatten(value):
         if isinstance(value, dict):
