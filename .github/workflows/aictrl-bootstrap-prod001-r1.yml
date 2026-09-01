@@ -1,0 +1,69 @@
+name: AICTRL bootstrap PROD-001 R1
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: aictrl-bootstrap-prod001-r1
+  cancel-in-progress: false
+
+jobs:
+  rework:
+    if: >-
+      github.repository == 'qq230849622-a11y/AI-Dev-Control-Plane' &&
+      github.actor == 'qq230849622-a11y' &&
+      github.event.issue.number == 20 &&
+      github.event.action == 'created' &&
+      startsWith(github.event.comment.body, 'AICTRL_BOOTSTRAP_PROD001_R1_START_V1')
+    runs-on: [self-hosted, Windows, X64, aictrl-win]
+    timeout-minutes: 45
+    steps:
+      - name: Initialize bounded R1 result
+        shell: powershell
+        run: |
+          @"
+          AICTRL_BOOTSTRAP_PROD001_R1_RESULT_V1
+          project_key: AI_DEV_CONTROL_PLANE
+          repo: qq230849622-a11y/AI-Dev-Control-Plane
+          task_id: CTRL-PROD-001
+          model: gpt-5.6-terra
+          session_id:
+          worker_head:
+          pr_number: 23
+          pr_url: https://github.com/qq230849622-a11y/AI-Dev-Control-Plane/pull/23
+          reason: R1_DISPATCHER_NOT_COMPLETED
+          status: FAIL
+          "@ | Set-Content -LiteralPath "$env:RUNNER_TEMP\aictrl-bootstrap-prod001-r1-result.txt" -Encoding utf8
+
+      - name: Check out trusted default branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Run bounded Terra review rework
+        id: rework
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: powershell
+        run: >-
+          python -m scripts.aictrl_bootstrap_prod001_r1
+          --event "$env:GITHUB_EVENT_PATH"
+          --result "$env:RUNNER_TEMP\aictrl-bootstrap-prod001-r1-result.txt"
+
+      - name: Post bounded R1 result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: powershell
+        run: |
+          $result = "$env:RUNNER_TEMP\aictrl-bootstrap-prod001-r1-result.txt"
+          if (!(Test-Path -LiteralPath $result)) { throw "PROD-001 R1 result file is missing." }
+          gh issue comment 20 --repo qq230849622-a11y/AI-Dev-Control-Plane --body-file $result
+          if ('${{ steps.rework.outcome }}' -ne 'success') { exit 1 }
