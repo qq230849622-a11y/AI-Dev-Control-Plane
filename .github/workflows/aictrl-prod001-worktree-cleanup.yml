@@ -1,0 +1,64 @@
+name: AICTRL PROD-001 retained worktree cleanup
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: aictrl-prod001-maintenance
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    if: >-
+      github.repository == 'qq230849622-a11y/AI-Dev-Control-Plane' &&
+      github.actor == 'qq230849622-a11y' &&
+      github.event.issue.number == 20 &&
+      github.event.action == 'created' &&
+      startsWith(github.event.comment.body, 'AICTRL_PROD001_WORKTREE_CLEANUP_V1')
+    runs-on: [self-hosted, Windows, X64, aictrl-win]
+    timeout-minutes: 10
+    steps:
+      - name: Initialize bounded cleanup result
+        shell: powershell
+        run: |
+          @"
+          AICTRL_PROD001_WORKTREE_CLEANUP_RESULT_V1
+          project_key: AI_DEV_CONTROL_PLANE
+          repo: qq230849622-a11y/AI-Dev-Control-Plane
+          task_id: CTRL-PROD-001
+          session_id: ai-dev-control-plane-7
+          branch: ctrl/prod-001-generic-task-dispatch
+          head_sha: 53565c28840f3d1cd9585934b319c1d5f9278701
+          reason: CLEANUP_NOT_COMPLETED
+          status: FAIL
+          "@ | Set-Content -LiteralPath "$env:RUNNER_TEMP\aictrl-prod001-worktree-cleanup.txt" -Encoding utf8
+
+      - name: Check out trusted default branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Reclaim only proven disposable retained worktree
+        id: cleanup
+        shell: powershell
+        run: >-
+          python -m scripts.aictrl_prod001_worktree_cleanup
+          --event "$env:GITHUB_EVENT_PATH"
+          --result "$env:RUNNER_TEMP\aictrl-prod001-worktree-cleanup.txt"
+
+      - name: Post bounded cleanup result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: powershell
+        run: |
+          $result = "$env:RUNNER_TEMP\aictrl-prod001-worktree-cleanup.txt"
+          if (!(Test-Path -LiteralPath $result)) { throw "PROD-001 cleanup result missing." }
+          gh issue comment 20 --repo qq230849622-a11y/AI-Dev-Control-Plane --body-file $result
+          if ('${{ steps.cleanup.outcome }}' -ne 'success') { exit 1 }
