@@ -30,3 +30,9 @@ jobs:
           python -m pip install -e ".[test]"
       - name: Run tests
         run: python -m pytest -q
+      - name: Validate protocol examples
+        shell: bash
+        run: |
+          for file in examples/*.json; do
+            aictrl validate "$file"
+          done
