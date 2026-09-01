@@ -135,6 +135,72 @@ def test_conversation_settings_bind_model_and_reasoning_before_brief(monkeypatch
     assert calls[0][1] == {"method": "PATCH", "payload": {"model": "gpt-5.6-terra", "reasoningEffort": "medium"}}
 
 
+def test_ao_project_summary_is_resolved_through_project_get_before_binding_match(monkeypatch):
+    binding = SimpleNamespace(repo="qq230849622-a11y/AI-Dev-Control-Plane", default_branch="master")
+    responses = [
+        {"projects": [{"id": "other"}, {"id": "expected"}]},
+        {"project": {"id": "other", "repo": "https://github.com/example/other.git", "defaultBranch": "main"}},
+        {"project": {"id": "expected", "repo": "https://github.com/qq230849622-a11y/AI-Dev-Control-Plane.git", "config": {"defaultBranch": "master"}}},
+    ]
+    calls = []
+    monkeypatch.setattr(dispatch, "command_json", lambda *args: calls.append(args) or responses.pop(0))
+    project = dispatch.find_ao_project("ao.exe", binding)
+    assert project["id"] == "expected"
+    assert calls[1][1:4] == ("project", "get", "other")
+
+
+def test_worker_brief_references_validated_issue_and_is_bounded():
+    brief = dispatch.worker_brief(task_document(), "aictrl/task", "master", 29)
+    assert f"issues/29" in brief
+    assert dispatch.TASK_BEGIN in brief and json.dumps(task_document(), sort_keys=True) not in brief
+    assert len(brief) <= dispatch.MAX_WORKER_BRIEF_LENGTH
+    with pytest.raises(dispatch.DispatchFailure, match="CONTROLLER_ISSUE_CONTEXT_UNAVAILABLE"):
+        dispatch.worker_brief(task_document(), "aictrl/task", "master", "29")
+
+
+def test_worker_brief_send_fails_closed_at_ao_message_limit(monkeypatch):
+    monkeypatch.setattr(dispatch, "command_success", lambda *_: pytest.fail("must not send an oversized brief"))
+    with pytest.raises(dispatch.DispatchFailure, match="WORKER_BRIEF_TOO_LARGE"):
+        dispatch.send_worker_brief("ao.exe", "session-1", "x" * 4097)
+
+
+def test_desktop_thread_name_is_deterministic_human_readable_and_bounded():
+    assert dispatch.desktop_thread_name("PRE-005", "gpt-5.6-terra") == "AICTRL PRE-005 terra"
+    long_task_id = "PRE-" + "x" * 200
+    name = dispatch.desktop_thread_name(long_task_id, "gpt-5.6-luna")
+    assert name.startswith("AICTRL PRE-") and name.endswith(" luna")
+    assert len(name) <= dispatch.MAX_DESKTOP_THREAD_NAME
+    assert name == dispatch.desktop_thread_name(long_task_id, "gpt-5.6-luna")
+
+
+def test_desktop_thread_title_round_trip_and_provider_id_are_verified_before_brief(monkeypatch):
+    commands = []
+    monkeypatch.setattr(dispatch, "command_success", lambda *args: commands.append(args) or True)
+    monkeypatch.setattr(dispatch, "session_snapshot", lambda *_: {"displayName": "AICTRL PRE-005 terra"})
+    monkeypatch.setattr(dispatch, "conversation_snapshot", lambda *_: {"providerThreadId": "codex-thread-1"})
+    assert dispatch.set_and_verify_desktop_thread("ao.exe", {"port": 1}, "session-1", "project-1", "AICTRL PRE-005 terra") == "codex-thread-1"
+    assert commands == [("ao.exe", "session", "rename", "session-1", "AICTRL PRE-005 terra", "--project", "project-1")]
+
+
+@pytest.mark.parametrize("session, snapshot, code", [
+    (None, {"providerThreadId": "codex-thread-1"}, "DESKTOP_THREAD_TITLE_UNVERIFIED"),
+    ({"displayName": "other"}, {"providerThreadId": "codex-thread-1"}, "DESKTOP_THREAD_TITLE_UNVERIFIED"),
+    ({"displayName": "AICTRL PRE-005 terra"}, {}, "PROVIDER_THREAD_ID_UNAVAILABLE"),
+])
+def test_desktop_metadata_failures_close_before_worker_brief(monkeypatch, session, snapshot, code):
+    monkeypatch.setattr(dispatch, "command_success", lambda *_: True)
+    monkeypatch.setattr(dispatch, "session_snapshot", lambda *_: session)
+    monkeypatch.setattr(dispatch, "conversation_snapshot", lambda *_: snapshot)
+    with pytest.raises(dispatch.DispatchFailure, match=code):
+        dispatch.set_and_verify_desktop_thread("ao.exe", {"port": 1}, "session-1", "project-1", "AICTRL PRE-005 terra")
+
+
+def test_desktop_thread_title_set_failure_fails_closed(monkeypatch):
+    monkeypatch.setattr(dispatch, "command_success", lambda *_: False)
+    with pytest.raises(dispatch.DispatchFailure, match="DESKTOP_THREAD_TITLE_SET_FAILED"):
+        dispatch.set_and_verify_desktop_thread("ao.exe", {"port": 1}, "session-1", "project-1", "AICTRL PRE-005 terra")
+
+
 def test_direct_script_entry_bootstraps_repo_src_without_pythonpath(tmp_path):
     environment = os.environ.copy()
     environment.pop("PYTHONPATH", None)
@@ -174,7 +240,7 @@ def test_worker_session_name_is_deterministic_and_limited_to_twenty_characters()
 
 
 def test_worker_brief_leaves_canonical_testing_policy_to_controller():
-    brief = dispatch.worker_brief(task_document(), "aictrl/task", "master")
+    brief = dispatch.worker_brief(task_document(), "aictrl/task", "master", 29)
     assert "Run the task testing_policy commands" not in brief
     assert "controller owns the canonical testing_policy" in brief
 
@@ -212,9 +278,13 @@ def test_unexpected_post_spawn_failure_still_runs_cleanup_and_cleanup_overrides(
 
 def test_review_event_is_schema_valid_and_carries_controller_evidence():
     task = task_document()
-    event = dispatch.review_event(task, "event-2", {"number": 8, "url": "https://example.test/pr/8"}, "a" * 40, "gpt-5.6-terra", "medium", "session-1")
+    event = dispatch.review_event(task, "event-2", {"number": 8, "url": "https://example.test/pr/8"}, "a" * 40, "gpt-5.6-terra", "medium", "session-1", "AICTRL PRE-005 terra", "codex-thread-1")
     assert dispatch.validate_document(event).valid
     assert event["payload"]["session_id"] == "session-1"
+    assert event["payload"]["desktop_thread_name"] == "AICTRL PRE-005 terra"
+    assert event["payload"]["provider_thread_id"] == "codex-thread-1"
+    with pytest.raises(dispatch.DispatchFailure, match="REVIEW_THREAD_EVIDENCE_INVALID"):
+        dispatch.review_event(task, "event-2", {"number": 8, "url": "https://example.test/pr/8"}, "a" * 40, "gpt-5.6-terra", "medium", "session-1", "", "")
 
 
 def test_generic_workflow_is_issue_comment_only_and_initializes_evidence_first():
@@ -229,3 +299,5 @@ def test_generic_workflow_is_issue_comment_only_and_initializes_evidence_first()
     assert "github.event.comment.id" not in workflow
     assert "permissions:\n  contents: read\n  issues: write" in workflow
     assert workflow.index("Initialize bounded failure evidence") < workflow.index("Check out trusted default branch")
+    assert "aictrl_task_dispatch_bootstrap.py" not in workflow
+    assert "python scripts/aictrl_task_dispatch.py" in workflow
