@@ -8,7 +8,7 @@ to the normal dispatcher.  PRE-005 must fold this into the dispatcher and
 remove this file before acceptance.
 """
 
-import scripts.aictrl_task_dispatch as dispatch
+import aictrl_task_dispatch as dispatch
 
 
 def find_ao_project_v01210(binary, binding):
