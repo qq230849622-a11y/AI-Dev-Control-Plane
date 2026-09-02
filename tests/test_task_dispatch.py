@@ -174,7 +174,7 @@ def test_desktop_thread_name_is_deterministic_human_readable_and_bounded():
     assert name == dispatch.desktop_thread_name(long_task_id, "gpt-5.6-luna")
 
 
-def conversation_snapshot(*, title="AICTRL PRE-005 terra", conversation_id="conversation-1", messages=None):
+def conversation_snapshot(*, title="AICTRL PRE-005 terra", conversation_id="conversation-1", messages=None, turns=None, activities=None):
     return {
         "conversationId": conversation_id,
         "sessionId": "session-1",
@@ -182,6 +182,8 @@ def conversation_snapshot(*, title="AICTRL PRE-005 terra", conversation_id="conv
         "settings": {"model": "gpt-5.6-terra", "reasoningEffort": "medium"},
         "title": title,
         "messages": [] if messages is None else messages,
+        "turns": [] if turns is None else turns,
+        "activities": [] if activities is None else activities,
     }
 
 
@@ -199,12 +201,72 @@ def test_metadata_initialization_is_harmless_bounded_marker_turn(monkeypatch):
 def test_metadata_initialization_waits_for_exact_bound_provider_marker(monkeypatch):
     snapshots = [
         conversation_snapshot(messages=[{"role": "assistant", "origin": "provider", "text": dispatch.METADATA_INITIALIZATION_MARKER + " extra"}]),
-        conversation_snapshot(messages=[{"role": "assistant", "origin": "provider", "text": dispatch.METADATA_INITIALIZATION_MARKER}]),
+        conversation_snapshot(
+            messages=[{"role": "assistant", "origin": "provider", "text": dispatch.METADATA_INITIALIZATION_MARKER, "turnId": "marker-turn"}],
+            turns=[{"id": "marker-turn", "state": "completed"}],
+        ),
     ]
     monkeypatch.setattr(dispatch, "api_document", lambda *_args, **_kwargs: {"session": {"harness": "codex"}})
     monkeypatch.setattr(dispatch, "conversation_snapshot", lambda *_: snapshots.pop(0))
     monkeypatch.setattr(dispatch.time, "sleep", lambda _: None)
     assert dispatch.wait_for_metadata_initialization({"port": 1}, "session-1", "gpt-5.6-terra", "medium")["conversationId"] == "conversation-1"
+
+
+@pytest.mark.parametrize("kind", sorted(dispatch.METADATA_PROHIBITED_ACTIVITY_KINDS))
+def test_metadata_marker_turn_rejects_prohibited_activity(kind):
+    snapshot = conversation_snapshot(
+        messages=[{"role": "assistant", "origin": "provider", "text": dispatch.METADATA_INITIALIZATION_MARKER, "turnId": "marker-turn"}],
+        turns=[{"id": "marker-turn", "state": "completed"}],
+        activities=[{"turnId": "marker-turn", "activityKind": kind}],
+    )
+    with pytest.raises(dispatch.DispatchFailure, match="METADATA_TURN_ACTIVITY_DETECTED"):
+        dispatch.verify_metadata_marker_turn(snapshot)
+
+
+def test_metadata_marker_turn_ignores_activity_from_another_turn_and_allows_benign_activity():
+    snapshot = conversation_snapshot(
+        messages=[{"role": "assistant", "origin": "provider", "text": dispatch.METADATA_INITIALIZATION_MARKER, "turnId": "marker-turn"}],
+        turns=[{"id": "marker-turn", "state": "completed"}],
+        activities=[
+            {"turnId": "other-turn", "activityKind": "command"},
+            {"turnId": "marker-turn", "activityKind": "reasoning"},
+            {"turnId": "marker-turn", "activityKind": "usage"},
+            {"turnId": "marker-turn", "activityKind": "system"},
+        ],
+    )
+    assert dispatch.verify_metadata_marker_turn(snapshot) == "marker-turn"
+
+
+@pytest.mark.parametrize("messages, turns", [
+    ([], []),
+    ([
+        {"role": "assistant", "origin": "provider", "text": dispatch.METADATA_INITIALIZATION_MARKER, "turnId": "one"},
+        {"role": "assistant", "origin": "provider", "text": dispatch.METADATA_INITIALIZATION_MARKER, "turnId": "two"},
+    ], [{"id": "one", "state": "completed"}, {"id": "two", "state": "completed"}]),
+    ([{"role": "assistant", "origin": "provider", "text": dispatch.METADATA_INITIALIZATION_MARKER}], []),
+    ([{"role": "assistant", "origin": "provider", "text": dispatch.METADATA_INITIALIZATION_MARKER, "turnId": "marker-turn"}], [{"id": "marker-turn", "state": "running"}]),
+])
+def test_metadata_marker_turn_requires_one_completed_bound_turn(messages, turns):
+    with pytest.raises(dispatch.DispatchFailure):
+        dispatch.verify_metadata_marker_turn(conversation_snapshot(messages=messages, turns=turns))
+
+
+@pytest.mark.parametrize("head, status", [
+    ("head-after", ""),
+    ("head-before", " M scripts/aictrl_task_dispatch.py"),
+])
+def test_metadata_worktree_snapshot_fails_closed_on_head_or_status_drift(monkeypatch, tmp_path, head, status):
+    monkeypatch.setattr(dispatch, "git", lambda _, *args, **__: "head-before" if args[0] == "rev-parse" else "")
+    before = dispatch.worktree_snapshot(tmp_path)
+    monkeypatch.setattr(dispatch, "git", lambda _, *args, **__: head if args[0] == "rev-parse" else status)
+    with pytest.raises(dispatch.DispatchFailure, match="METADATA_WORKTREE_(MUTATED|NOT_CLEAN)"):
+        dispatch.verify_metadata_worktree_unchanged(before, tmp_path)
+
+
+def test_metadata_worktree_snapshot_requires_a_clean_baseline(monkeypatch, tmp_path):
+    monkeypatch.setattr(dispatch, "git", lambda _, *args, **__: "head-before" if args[0] == "rev-parse" else "?? unexpected")
+    with pytest.raises(dispatch.DispatchFailure, match="METADATA_WORKTREE_NOT_CLEAN"):
+        dispatch.worktree_snapshot(tmp_path)
 
 
 @pytest.mark.parametrize("session, snapshot, code", [

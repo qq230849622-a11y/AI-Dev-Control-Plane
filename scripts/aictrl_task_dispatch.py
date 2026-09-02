@@ -54,6 +54,10 @@ METADATA_INITIALIZATION_MESSAGE = (
     f"{METADATA_INITIALIZATION_MARKER}"
 )
 METADATA_INITIALIZATION_ATTEMPTS = 24
+METADATA_PROHIBITED_ACTIVITY_KINDS = {
+    "command", "file_change", "mcp_tool", "approval", "auto_review", "user_input", "error",
+}
+METADATA_BENIGN_ACTIVITY_KINDS = {"reasoning", "usage", "system"}
 
 
 class DispatchFailure(RuntimeError):
@@ -496,15 +500,65 @@ def conversation_id(snapshot):
     return value
 
 
-def provider_message_is_exact_marker(snapshot):
+def exact_marker_messages(snapshot):
     messages = snapshot.get("messages") if isinstance(snapshot, dict) else None
     if not isinstance(messages, list):
-        return False
-    provider_messages = [
+        return None
+    return [
         message for message in messages
-        if isinstance(message, dict) and message.get("role") == "assistant" and message.get("origin") == "provider"
+        if (
+            isinstance(message, dict) and message.get("role") == "assistant"
+            and message.get("origin") == "provider" and message.get("text") == METADATA_INITIALIZATION_MARKER
+        )
     ]
-    return bool(provider_messages) and provider_messages[-1].get("text") == METADATA_INITIALIZATION_MARKER
+
+
+def metadata_marker_turn_id(snapshot):
+    markers = exact_marker_messages(snapshot)
+    if markers is None:
+        raise DispatchFailure("METADATA_MARKER_TURN_UNAVAILABLE")
+    if len(markers) != 1:
+        raise DispatchFailure("METADATA_MARKER_TURN_UNAVAILABLE")
+    turn_id = markers[0].get("turnId")
+    if not isinstance(turn_id, str) or not turn_id.strip():
+        raise DispatchFailure("METADATA_MARKER_TURN_UNAVAILABLE")
+    return turn_id
+
+
+def verify_metadata_marker_turn(snapshot):
+    marker_turn_id = metadata_marker_turn_id(snapshot)
+    turns = snapshot.get("turns") if isinstance(snapshot, dict) else None
+    activities = snapshot.get("activities") if isinstance(snapshot, dict) else None
+    if not isinstance(turns, list) or not isinstance(activities, list):
+        raise DispatchFailure("METADATA_MARKER_TURN_UNAVAILABLE")
+    matching_turns = [turn for turn in turns if isinstance(turn, dict) and turn.get("id") == marker_turn_id]
+    if len(matching_turns) != 1 or matching_turns[0].get("state") != "completed":
+        raise DispatchFailure("METADATA_MARKER_TURN_INCOMPLETE")
+    for activity in activities:
+        if not isinstance(activity, dict):
+            raise DispatchFailure("METADATA_TURN_ACTIVITY_DETECTED")
+        if activity.get("turnId") != marker_turn_id:
+            continue
+        kind = activity.get("activityKind")
+        if kind in METADATA_PROHIBITED_ACTIVITY_KINDS or kind not in METADATA_BENIGN_ACTIVITY_KINDS:
+            raise DispatchFailure("METADATA_TURN_ACTIVITY_DETECTED")
+    return marker_turn_id
+
+
+def worktree_snapshot(workspace):
+    if not isinstance(workspace, Path) or not workspace.is_dir():
+        raise DispatchFailure("METADATA_WORKTREE_UNAVAILABLE")
+    head = git(workspace, "rev-parse", "HEAD", code="METADATA_WORKTREE_UNAVAILABLE")
+    clean_status = git(workspace, "status", "--porcelain", code="METADATA_WORKTREE_UNAVAILABLE")
+    if clean_status:
+        raise DispatchFailure("METADATA_WORKTREE_NOT_CLEAN")
+    return head, clean_status
+
+
+def verify_metadata_worktree_unchanged(before, workspace):
+    after = worktree_snapshot(workspace)
+    if after != before:
+        raise DispatchFailure("METADATA_WORKTREE_MUTATED")
 
 
 def send_metadata_initialization(binary, session_id):
@@ -521,8 +575,14 @@ def wait_for_metadata_initialization(status, session_id, model, reasoning):
         if isinstance(snapshot, dict):
             if not bound_conversation(snapshot, session_id, model, reasoning):
                 raise DispatchFailure("CONVERSATION_SETTINGS_SUBSTITUTION")
-            if provider_message_is_exact_marker(snapshot):
+            try:
+                verify_metadata_marker_turn(snapshot)
                 return snapshot
+            except DispatchFailure as error:
+                if error.code != "METADATA_MARKER_TURN_UNAVAILABLE":
+                    raise
+                if exact_marker_messages(snapshot):
+                    raise
         if isinstance(session, dict) and session.get("status") == "terminated":
             raise DispatchFailure("METADATA_INITIALIZATION_TERMINATED")
         time.sleep(5)
@@ -794,8 +854,10 @@ def execute(event_path, result_path):
         verify_isolated_workspace(workspace, main_path)
         set_conversation_settings(status, session_id, model, task["reasoning"])
         desktop_title = desktop_thread_name(task["task_id"], model)
+        metadata_worktree_before = worktree_snapshot(workspace)
         send_metadata_initialization(binary, session_id)
         wait_for_metadata_initialization(status, session_id, model, task["reasoning"])
+        verify_metadata_worktree_unchanged(metadata_worktree_before, workspace)
         conversation_id = set_and_verify_desktop_thread(status, session_id, model, task["reasoning"], desktop_title)
         send_worker_brief(binary, session_id, worker_brief(task, branch, binding.default_branch, issue_number))
         result = wait_for_worker(status, session_id, task, model, task["reasoning"])
