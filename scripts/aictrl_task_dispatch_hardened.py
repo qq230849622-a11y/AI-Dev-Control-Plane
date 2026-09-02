@@ -11,18 +11,20 @@ import scripts.aictrl_task_dispatch as base
 
 
 def _local_branch_tip(main_path, branch):
-    result = base.run(
-        ["git", "show-ref", "--verify", "--hash", f"refs/heads/{branch}"],
-        cwd=main_path,
-    )
-    if result.returncode == 0:
-        tip = result.stdout.strip()
-        if not tip:
-            raise base.DispatchFailure("LOCAL_BRANCH_CHECK_FAILED")
-        return tip
-    if result.returncode == 1:
+    ref = f"refs/heads/{branch}"
+    exists = base.run(["git", "show-ref", "--exists", ref], cwd=main_path)
+    if exists.returncode == 2:
         return None
-    raise base.DispatchFailure("LOCAL_BRANCH_CHECK_FAILED")
+    if exists.returncode != 0:
+        raise base.DispatchFailure("LOCAL_BRANCH_CHECK_FAILED")
+
+    resolved = base.run(["git", "show-ref", "--verify", "--hash", ref], cwd=main_path)
+    if resolved.returncode != 0:
+        raise base.DispatchFailure("LOCAL_BRANCH_CHECK_FAILED")
+    tip = resolved.stdout.strip()
+    if not tip:
+        raise base.DispatchFailure("LOCAL_BRANCH_CHECK_FAILED")
+    return tip
 
 
 def _branch_is_worktree_bound(main_path, branch):
