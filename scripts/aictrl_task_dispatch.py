@@ -49,7 +49,9 @@ MAX_WORKER_BRIEF_LENGTH = 3500
 METADATA_INITIALIZATION_MARKER = "AICTRL_THREAD_READY_V1"
 METADATA_INITIALIZATION_MESSAGE = (
     "AICTRL metadata initialization only. Do not read files, use tools, run commands, "
-    f"or make edits. Reply with exactly {METADATA_INITIALIZATION_MARKER}."
+    "or make edits. Your entire provider response must be exactly the following marker, "
+    "on its own line, with no punctuation or extra text:\n"
+    f"{METADATA_INITIALIZATION_MARKER}"
 )
 METADATA_INITIALIZATION_ATTEMPTS = 24
 
@@ -429,10 +431,9 @@ def worker_brief(task, branch, base_branch, issue_number):
     return brief
 
 
-def spawn_worker(binary, project_id, issue_number, model, branch, name):
+def spawn_worker(binary, project_id, model, branch, name):
     result = run([
-        str(binary), "spawn", "--project", project_id, "--issue", str(issue_number),
-        "--tracker-provider", "github", "--harness", "codex", "--model", model,
+        str(binary), "spawn", "--project", project_id, "--harness", "codex", "--model", model,
         "--mode", "chat", "--branch", branch, "--name", name,
     ], timeout=120)
     if result.returncode != 0:
@@ -788,7 +789,7 @@ def execute(event_path, result_path):
         catalog = api_document(status, f"/api/v1/agents/codex/models?projectId={quote(project_id, safe='')}")
         if not isinstance(catalog, dict) or not any(isinstance(item, dict) and item.get("id") == model for item in catalog.get("models", [])):
             raise DispatchFailure("MODEL_CATALOG_UNAVAILABLE")
-        session_id = spawn_worker(binary, project_id, issue_number, model, branch, worker_session_name(task["task_id"]))
+        session_id = spawn_worker(binary, project_id, model, branch, worker_session_name(task["task_id"]))
         workspace = workspace_path(status, session_id)
         verify_isolated_workspace(workspace, main_path)
         set_conversation_settings(status, session_id, model, task["reasoning"])

@@ -192,7 +192,8 @@ def test_metadata_initialization_is_harmless_bounded_marker_turn(monkeypatch):
     assert commands == [("ao.exe", "send", "--session", "session-1", "--message", dispatch.METADATA_INITIALIZATION_MESSAGE)]
     assert len(dispatch.METADATA_INITIALIZATION_MESSAGE) <= 4096
     assert "Do not read files, use tools, run commands, or make edits." in dispatch.METADATA_INITIALIZATION_MESSAGE
-    assert dispatch.METADATA_INITIALIZATION_MESSAGE.endswith(dispatch.METADATA_INITIALIZATION_MARKER + ".")
+    assert "with no punctuation or extra text:" in dispatch.METADATA_INITIALIZATION_MESSAGE
+    assert dispatch.METADATA_INITIALIZATION_MESSAGE.endswith("\n" + dispatch.METADATA_INITIALIZATION_MARKER)
 
 
 def test_metadata_initialization_waits_for_exact_bound_provider_marker(monkeypatch):
@@ -294,10 +295,15 @@ def test_target_repository_gh_calls_clear_actions_tokens(monkeypatch):
 def test_worker_spawn_is_chat_mode_with_model_but_without_an_initial_task_turn(monkeypatch):
     commands = []
     monkeypatch.setattr(dispatch, "run", lambda command, **_: commands.append(command) or SimpleNamespace(returncode=0, stdout="spawned session session-1 (chat)"))
-    assert dispatch.spawn_worker("ao.exe", "project-1", 20, "gpt-5.6-terra", "aictrl/task", "task") == "session-1"
-    assert "--prompt" not in commands[0]
-    assert commands[0][commands[0].index("--model") + 1] == "gpt-5.6-terra"
-    assert commands[0][commands[0].index("--mode") + 1] == "chat"
+    assert dispatch.spawn_worker("ao.exe", "project-1", "gpt-5.6-terra", "aictrl/task", "task") == "session-1"
+    command = commands[0]
+    assert all(flag not in command for flag in ("--issue", "--tracker-provider", "--prompt"))
+    assert command[command.index("--project") + 1] == "project-1"
+    assert command[command.index("--harness") + 1] == "codex"
+    assert command[command.index("--model") + 1] == "gpt-5.6-terra"
+    assert command[command.index("--mode") + 1] == "chat"
+    assert command[command.index("--branch") + 1] == "aictrl/task"
+    assert command[command.index("--name") + 1] == "task"
 
 
 def test_worker_session_name_is_deterministic_and_limited_to_twenty_characters():
