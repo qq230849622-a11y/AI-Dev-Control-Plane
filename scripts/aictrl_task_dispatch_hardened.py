@@ -1,10 +1,10 @@
-"""Production dispatcher hardening for provably safe stale local branch residue.
+"""Production dispatcher hardening.
 
-This thin wrapper preserves the canonical dispatcher and replaces only its
-existing-artifact preflight. A deterministic local task branch may be reclaimed
-only when Git positively proves that the remote branch is absent, no historical
-PR artifact exists, the local task ref is a direct ref, no worktree owns the
-branch, and the branch tip is already reachable from the synced current HEAD.
+This thin wrapper preserves the canonical dispatcher while tightening two
+production preflight/runtime boundaries:
+1. provably safe reclamation of stale deterministic local task branches; and
+2. exact execution semantics for the schema-valid optional testing policy.
+
 Ambiguity preserves data and fails closed.
 """
 
@@ -109,8 +109,34 @@ def reject_existing_artifacts(main_path, task, branch):
         raise base.DispatchFailure("LOCAL_BRANCH_RECLAIM_UNVERIFIED")
 
 
+def run_testing_policy(workspace, task):
+    """Honor the V1 testing policy without inventing ambiguous semantics."""
+    policy = task.get("testing_policy") if isinstance(task, dict) else None
+    if not isinstance(policy, dict):
+        raise base.DispatchFailure("TESTING_POLICY_INVALID")
+
+    required = policy.get("required")
+    commands = policy.get("commands")
+    if type(required) is not bool or not isinstance(commands, list):
+        raise base.DispatchFailure("TESTING_POLICY_INVALID")
+    if any(not isinstance(command, str) or not command.strip() for command in commands):
+        raise base.DispatchFailure("TESTING_POLICY_INVALID")
+
+    if required is False:
+        if commands:
+            raise base.DispatchFailure("TESTING_POLICY_INVALID")
+        return
+
+    if not commands:
+        raise base.DispatchFailure("TESTING_POLICY_INVALID")
+    for command in commands:
+        if base.run(command, cwd=workspace, timeout=900, shell=True).returncode != 0:
+            raise base.DispatchFailure("CONTROLLER_TESTS_FAILED")
+
+
 def install():
     base.reject_existing_artifacts = reject_existing_artifacts
+    base.run_testing_policy = run_testing_policy
 
 
 def main(argv=None):
