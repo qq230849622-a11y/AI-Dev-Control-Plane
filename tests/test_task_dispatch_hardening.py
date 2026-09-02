@@ -1,3 +1,4 @@
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -125,3 +126,10 @@ def test_wrapper_installs_only_the_hardened_preflight():
         assert base.reject_existing_artifacts is hard.reject_existing_artifacts
     finally:
         base.reject_existing_artifacts = original
+
+
+def test_production_workflow_uses_hardened_entrypoint_and_canonical_base():
+    workflow = (Path(__file__).parents[1] / ".github/workflows/aictrl-task-dispatch.yml").read_text(encoding="utf-8")
+    assert "python -m scripts.aictrl_task_dispatch_hardened" in workflow
+    assert "python scripts/aictrl_task_dispatch.py" in workflow
+    assert "PYTHONDONTWRITEBYTECODE: '1'" in workflow
