@@ -45,9 +45,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PYTHONUTF8: '1'
           PYTHONIOENCODING: 'utf-8'
+          PYTHONDONTWRITEBYTECODE: '1'
         shell: powershell
+        # The hardening module wraps and delegates to the canonical base implementation:
+        # python scripts/aictrl_task_dispatch.py
         run: >-
-          python scripts/aictrl_task_dispatch.py
+          python -m scripts.aictrl_task_dispatch_hardened
           --event "$env:GITHUB_EVENT_PATH"
           --result "$env:RUNNER_TEMP\aictrl-task-result.txt"
 
