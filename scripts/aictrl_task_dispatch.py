@@ -46,6 +46,18 @@ REGISTRY_DIRECTORY = Path(".ai-control/projects")
 TASK_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 MAX_DESKTOP_THREAD_NAME = 80
 MAX_WORKER_BRIEF_LENGTH = 3500
+METADATA_INITIALIZATION_MARKER = "AICTRL_THREAD_READY_V1"
+METADATA_INITIALIZATION_MESSAGE = (
+    "AICTRL metadata initialization only. Do not read files, use tools, run commands, "
+    "or make edits. Your entire provider response must be exactly the following marker, "
+    "on its own line, with no punctuation or extra text:\n"
+    f"{METADATA_INITIALIZATION_MARKER}"
+)
+METADATA_INITIALIZATION_ATTEMPTS = 24
+METADATA_PROHIBITED_ACTIVITY_KINDS = {
+    "command", "file_change", "mcp_tool", "approval", "auto_review", "user_input", "error",
+}
+METADATA_BENIGN_ACTIVITY_KINDS = {"reasoning", "usage", "system"}
 
 
 class DispatchFailure(RuntimeError):
@@ -423,10 +435,9 @@ def worker_brief(task, branch, base_branch, issue_number):
     return brief
 
 
-def spawn_worker(binary, project_id, issue_number, model, branch, name):
+def spawn_worker(binary, project_id, model, branch, name):
     result = run([
-        str(binary), "spawn", "--project", project_id, "--issue", str(issue_number),
-        "--tracker-provider", "github", "--harness", "codex", "--model", model,
+        str(binary), "spawn", "--project", project_id, "--harness", "codex", "--model", model,
         "--mode", "chat", "--branch", branch, "--name", name,
     ], timeout=120)
     if result.returncode != 0:
@@ -482,36 +493,127 @@ def desktop_thread_name(task_id, model):
     return f"{prefix}{task_id[:available]}-{digest}{suffix}"
 
 
-def session_snapshot(binary, session_id, project_id):
-    document = command_json(binary, "session", "get", session_id, "--project", project_id, "--json")
-    session = document.get("session") if isinstance(document, dict) else None
-    return session if isinstance(session, dict) else None
+def conversation_id(snapshot):
+    value = snapshot.get("conversationId") if isinstance(snapshot, dict) else None
+    if not isinstance(value, str) or not value.strip():
+        raise DispatchFailure("CONVERSATION_ID_UNAVAILABLE")
+    return value
 
 
-def provider_thread_id(snapshot):
-    thread_id = snapshot.get("providerThreadId") if isinstance(snapshot, dict) else None
-    if not isinstance(thread_id, str) or not thread_id.strip():
-        raise DispatchFailure("PROVIDER_THREAD_ID_UNAVAILABLE")
-    return thread_id
+def exact_marker_messages(snapshot):
+    messages = snapshot.get("messages") if isinstance(snapshot, dict) else None
+    if not isinstance(messages, list):
+        return None
+    return [
+        message for message in messages
+        if (
+            isinstance(message, dict) and message.get("role") == "assistant"
+            and message.get("origin") == "provider" and message.get("text") == METADATA_INITIALIZATION_MARKER
+        )
+    ]
 
 
-def set_and_verify_desktop_thread(binary, status, session_id, project_id, title):
+def metadata_marker_turn_id(snapshot):
+    markers = exact_marker_messages(snapshot)
+    if markers is None:
+        raise DispatchFailure("METADATA_MARKER_TURN_UNAVAILABLE")
+    if len(markers) != 1:
+        raise DispatchFailure("METADATA_MARKER_TURN_UNAVAILABLE")
+    turn_id = markers[0].get("turnId")
+    if not isinstance(turn_id, str) or not turn_id.strip():
+        raise DispatchFailure("METADATA_MARKER_TURN_UNAVAILABLE")
+    return turn_id
+
+
+def verify_metadata_marker_turn(snapshot):
+    marker_turn_id = metadata_marker_turn_id(snapshot)
+    turns = snapshot.get("turns") if isinstance(snapshot, dict) else None
+    activities = snapshot.get("activities") if isinstance(snapshot, dict) else None
+    if not isinstance(turns, list) or not isinstance(activities, list):
+        raise DispatchFailure("METADATA_MARKER_TURN_UNAVAILABLE")
+    matching_turns = [turn for turn in turns if isinstance(turn, dict) and turn.get("id") == marker_turn_id]
+    if len(matching_turns) != 1 or matching_turns[0].get("state") != "completed":
+        raise DispatchFailure("METADATA_MARKER_TURN_INCOMPLETE")
+    for activity in activities:
+        if not isinstance(activity, dict):
+            raise DispatchFailure("METADATA_TURN_ACTIVITY_DETECTED")
+        if activity.get("turnId") != marker_turn_id:
+            continue
+        kind = activity.get("activityKind")
+        if kind in METADATA_PROHIBITED_ACTIVITY_KINDS or kind not in METADATA_BENIGN_ACTIVITY_KINDS:
+            raise DispatchFailure("METADATA_TURN_ACTIVITY_DETECTED")
+    return marker_turn_id
+
+
+def worktree_snapshot(workspace):
+    if not isinstance(workspace, Path) or not workspace.is_dir():
+        raise DispatchFailure("METADATA_WORKTREE_UNAVAILABLE")
+    head = git(workspace, "rev-parse", "HEAD", code="METADATA_WORKTREE_UNAVAILABLE")
+    clean_status = git(workspace, "status", "--porcelain", code="METADATA_WORKTREE_UNAVAILABLE")
+    if clean_status:
+        raise DispatchFailure("METADATA_WORKTREE_NOT_CLEAN")
+    return head, clean_status
+
+
+def verify_metadata_worktree_unchanged(before, workspace):
+    after = worktree_snapshot(workspace)
+    if after != before:
+        raise DispatchFailure("METADATA_WORKTREE_MUTATED")
+
+
+def send_metadata_initialization(binary, session_id):
+    send_worker_brief(binary, session_id, METADATA_INITIALIZATION_MESSAGE)
+
+
+def wait_for_metadata_initialization(status, session_id, model, reasoning):
+    for _ in range(METADATA_INITIALIZATION_ATTEMPTS):
+        session_doc = api_document(status, f"/api/v1/sessions/{quote(session_id, safe='')}")
+        session = session_doc.get("session") if isinstance(session_doc, dict) else None
+        if isinstance(session, dict) and session.get("harness") not in (None, "codex"):
+            raise DispatchFailure("HARNESS_SUBSTITUTION")
+        snapshot = conversation_snapshot(status, session_id)
+        if isinstance(snapshot, dict):
+            if not bound_conversation(snapshot, session_id, model, reasoning):
+                raise DispatchFailure("CONVERSATION_SETTINGS_SUBSTITUTION")
+            try:
+                verify_metadata_marker_turn(snapshot)
+                return snapshot
+            except DispatchFailure as error:
+                if error.code != "METADATA_MARKER_TURN_UNAVAILABLE":
+                    raise
+                if exact_marker_messages(snapshot):
+                    raise
+        if isinstance(session, dict) and session.get("status") == "terminated":
+            raise DispatchFailure("METADATA_INITIALIZATION_TERMINATED")
+        time.sleep(5)
+    raise DispatchFailure("METADATA_INITIALIZATION_TIMEOUT")
+
+
+def set_and_verify_desktop_thread(status, session_id, model, reasoning, title):
     if not isinstance(title, str) or not title.strip() or len(title) > MAX_DESKTOP_THREAD_NAME:
         raise DispatchFailure("DESKTOP_THREAD_NAME_INVALID")
-    if not command_success(binary, "session", "rename", session_id, title, "--project", project_id):
+    response = api_document(
+        status, f"/api/v1/sessions/{quote(session_id, safe='')}/conversation/title",
+        method="PUT", payload={"title": title},
+    )
+    if response is None:
         raise DispatchFailure("DESKTOP_THREAD_TITLE_SET_FAILED")
-    session = session_snapshot(binary, session_id, project_id)
-    if session is None or session.get("displayName") != title:
+    snapshot = conversation_snapshot(status, session_id)
+    if not bound_conversation(snapshot, session_id, model, reasoning):
+        raise DispatchFailure("CONVERSATION_SETTINGS_SUBSTITUTION")
+    if snapshot.get("title") != title:
         raise DispatchFailure("DESKTOP_THREAD_TITLE_UNVERIFIED")
-    return provider_thread_id(conversation_snapshot(status, session_id))
+    return conversation_id(snapshot)
 
 
-def reverify_desktop_thread(binary, status, session_id, project_id, title, expected_provider_id):
-    session = session_snapshot(binary, session_id, project_id)
-    if session is None or session.get("displayName") != title:
+def reverify_desktop_thread(status, session_id, model, reasoning, title, expected_conversation_id):
+    snapshot = conversation_snapshot(status, session_id)
+    if not bound_conversation(snapshot, session_id, model, reasoning):
+        raise DispatchFailure("CONVERSATION_SETTINGS_SUBSTITUTION")
+    if snapshot.get("title") != title:
         raise DispatchFailure("DESKTOP_THREAD_TITLE_UNVERIFIED")
-    if provider_thread_id(conversation_snapshot(status, session_id)) != expected_provider_id:
-        raise DispatchFailure("PROVIDER_THREAD_ID_UNVERIFIED")
+    if conversation_id(snapshot) != expected_conversation_id:
+        raise DispatchFailure("CONVERSATION_ID_UNVERIFIED")
 
 
 def send_worker_brief(binary, session_id, brief):
@@ -660,10 +762,10 @@ def verify_pr_metadata(pr, branch, base_branch, worker_head):
         raise DispatchFailure("PR_STATE_MISMATCH")
 
 
-def review_event(task, event_id, pr, worker_head, model, reasoning, session_id, desktop_thread_name, provider_thread_id):
+def review_event(task, event_id, pr, worker_head, model, reasoning, session_id, desktop_thread_name, conversation_id):
     if (
         not isinstance(desktop_thread_name, str) or not desktop_thread_name.strip()
-        or not isinstance(provider_thread_id, str) or not provider_thread_id.strip()
+        or not isinstance(conversation_id, str) or not conversation_id.strip()
     ):
         raise DispatchFailure("REVIEW_THREAD_EVIDENCE_INVALID")
     event = {
@@ -671,7 +773,7 @@ def review_event(task, event_id, pr, worker_head, model, reasoning, session_id, 
         "task_id": task["task_id"], "head_sha": worker_head, "event_id": event_id,
         "actor": "AICTRL_CONTROLLER", "event_type": "REVIEW_REQUESTED", "status": "READY_FOR_REVIEW",
         "occurred_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
-        "payload": {"pr_number": pr["number"], "pr_url": pr["url"], "model": model, "reasoning": reasoning, "session_id": session_id, "desktop_thread_name": desktop_thread_name, "provider_thread_id": provider_thread_id, "verification": "provider thread title and id, result, PR scope, controller testing_policy, and terminated AO session verified"},
+        "payload": {"pr_number": pr["number"], "pr_url": pr["url"], "model": model, "reasoning": reasoning, "session_id": session_id, "desktop_thread_name": desktop_thread_name, "conversation_id": conversation_id, "desktop_thread_verified": True, "verification": "provider-native thread title, AO conversation correlation, result, PR scope, controller testing_policy, and terminated AO session verified"},
     }
     if not validate_document(event).valid:
         raise DispatchFailure("REVIEW_EVENT_SCHEMA_INVALID")
@@ -715,7 +817,7 @@ def execute(event_path, result_path):
     status = None
     project_id = ""
     desktop_title = ""
-    provider_id = ""
+    conversation_id = ""
     failure = None
     evidence = ""
     try:
@@ -747,20 +849,24 @@ def execute(event_path, result_path):
         catalog = api_document(status, f"/api/v1/agents/codex/models?projectId={quote(project_id, safe='')}")
         if not isinstance(catalog, dict) or not any(isinstance(item, dict) and item.get("id") == model for item in catalog.get("models", [])):
             raise DispatchFailure("MODEL_CATALOG_UNAVAILABLE")
-        session_id = spawn_worker(binary, project_id, issue_number, model, branch, worker_session_name(task["task_id"]))
+        session_id = spawn_worker(binary, project_id, model, branch, worker_session_name(task["task_id"]))
         workspace = workspace_path(status, session_id)
         verify_isolated_workspace(workspace, main_path)
         set_conversation_settings(status, session_id, model, task["reasoning"])
         desktop_title = desktop_thread_name(task["task_id"], model)
-        provider_id = set_and_verify_desktop_thread(binary, status, session_id, project_id, desktop_title)
+        metadata_worktree_before = worktree_snapshot(workspace)
+        send_metadata_initialization(binary, session_id)
+        wait_for_metadata_initialization(status, session_id, model, task["reasoning"])
+        verify_metadata_worktree_unchanged(metadata_worktree_before, workspace)
+        conversation_id = set_and_verify_desktop_thread(status, session_id, model, task["reasoning"], desktop_title)
         send_worker_brief(binary, session_id, worker_brief(task, branch, binding.default_branch, issue_number))
         result = wait_for_worker(status, session_id, task, model, task["reasoning"])
         pr, worker_head = verify_worker_pr(workspace, main_path, binding, task, branch, result)
         run_testing_policy(workspace, task)
         if defender_fingerprint() != defender_before:
             raise DispatchFailure("DEFENDER_NEW_DETECTION")
-        reverify_desktop_thread(binary, status, session_id, project_id, desktop_title, provider_id)
-        evidence = json.dumps(review_event(task, dispatch["event_id"], pr, worker_head, model, task["reasoning"], session_id, desktop_title, provider_id), sort_keys=True) + "\n"
+        reverify_desktop_thread(status, session_id, model, task["reasoning"], desktop_title, conversation_id)
+        evidence = json.dumps(review_event(task, dispatch["event_id"], pr, worker_head, model, task["reasoning"], session_id, desktop_title, conversation_id), sort_keys=True) + "\n"
     except DispatchFailure as exc:
         failure = exc.code
     except Exception:

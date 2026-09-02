@@ -174,51 +174,164 @@ def test_desktop_thread_name_is_deterministic_human_readable_and_bounded():
     assert name == dispatch.desktop_thread_name(long_task_id, "gpt-5.6-luna")
 
 
-def test_desktop_thread_title_round_trip_and_provider_id_are_verified_before_brief(monkeypatch):
+def conversation_snapshot(*, title="AICTRL PRE-005 terra", conversation_id="conversation-1", messages=None, turns=None, activities=None):
+    return {
+        "conversationId": conversation_id,
+        "sessionId": "session-1",
+        "harness": "codex",
+        "settings": {"model": "gpt-5.6-terra", "reasoningEffort": "medium"},
+        "title": title,
+        "messages": [] if messages is None else messages,
+        "turns": [] if turns is None else turns,
+        "activities": [] if activities is None else activities,
+    }
+
+
+def test_metadata_initialization_is_harmless_bounded_marker_turn(monkeypatch):
     commands = []
     monkeypatch.setattr(dispatch, "command_success", lambda *args: commands.append(args) or True)
-    monkeypatch.setattr(dispatch, "session_snapshot", lambda *_: {"displayName": "AICTRL PRE-005 terra"})
-    monkeypatch.setattr(dispatch, "conversation_snapshot", lambda *_: {"providerThreadId": "codex-thread-1"})
-    assert dispatch.set_and_verify_desktop_thread("ao.exe", {"port": 1}, "session-1", "project-1", "AICTRL PRE-005 terra") == "codex-thread-1"
-    assert commands == [("ao.exe", "session", "rename", "session-1", "AICTRL PRE-005 terra", "--project", "project-1")]
+    dispatch.send_metadata_initialization("ao.exe", "session-1")
+    assert commands == [("ao.exe", "send", "--session", "session-1", "--message", dispatch.METADATA_INITIALIZATION_MESSAGE)]
+    assert len(dispatch.METADATA_INITIALIZATION_MESSAGE) <= 4096
+    assert "Do not read files, use tools, run commands, or make edits." in dispatch.METADATA_INITIALIZATION_MESSAGE
+    assert "with no punctuation or extra text:" in dispatch.METADATA_INITIALIZATION_MESSAGE
+    assert dispatch.METADATA_INITIALIZATION_MESSAGE.endswith("\n" + dispatch.METADATA_INITIALIZATION_MARKER)
+
+
+def test_metadata_initialization_waits_for_exact_bound_provider_marker(monkeypatch):
+    snapshots = [
+        conversation_snapshot(messages=[{"role": "assistant", "origin": "provider", "text": dispatch.METADATA_INITIALIZATION_MARKER + " extra"}]),
+        conversation_snapshot(
+            messages=[{"role": "assistant", "origin": "provider", "text": dispatch.METADATA_INITIALIZATION_MARKER, "turnId": "marker-turn"}],
+            turns=[{"id": "marker-turn", "state": "completed"}],
+        ),
+    ]
+    monkeypatch.setattr(dispatch, "api_document", lambda *_args, **_kwargs: {"session": {"harness": "codex"}})
+    monkeypatch.setattr(dispatch, "conversation_snapshot", lambda *_: snapshots.pop(0))
+    monkeypatch.setattr(dispatch.time, "sleep", lambda _: None)
+    assert dispatch.wait_for_metadata_initialization({"port": 1}, "session-1", "gpt-5.6-terra", "medium")["conversationId"] == "conversation-1"
+
+
+@pytest.mark.parametrize("kind", sorted(dispatch.METADATA_PROHIBITED_ACTIVITY_KINDS))
+def test_metadata_marker_turn_rejects_prohibited_activity(kind):
+    snapshot = conversation_snapshot(
+        messages=[{"role": "assistant", "origin": "provider", "text": dispatch.METADATA_INITIALIZATION_MARKER, "turnId": "marker-turn"}],
+        turns=[{"id": "marker-turn", "state": "completed"}],
+        activities=[{"turnId": "marker-turn", "activityKind": kind}],
+    )
+    with pytest.raises(dispatch.DispatchFailure, match="METADATA_TURN_ACTIVITY_DETECTED"):
+        dispatch.verify_metadata_marker_turn(snapshot)
+
+
+def test_metadata_marker_turn_ignores_activity_from_another_turn_and_allows_benign_activity():
+    snapshot = conversation_snapshot(
+        messages=[{"role": "assistant", "origin": "provider", "text": dispatch.METADATA_INITIALIZATION_MARKER, "turnId": "marker-turn"}],
+        turns=[{"id": "marker-turn", "state": "completed"}],
+        activities=[
+            {"turnId": "other-turn", "activityKind": "command"},
+            {"turnId": "marker-turn", "activityKind": "reasoning"},
+            {"turnId": "marker-turn", "activityKind": "usage"},
+            {"turnId": "marker-turn", "activityKind": "system"},
+        ],
+    )
+    assert dispatch.verify_metadata_marker_turn(snapshot) == "marker-turn"
+
+
+@pytest.mark.parametrize("messages, turns", [
+    ([], []),
+    ([
+        {"role": "assistant", "origin": "provider", "text": dispatch.METADATA_INITIALIZATION_MARKER, "turnId": "one"},
+        {"role": "assistant", "origin": "provider", "text": dispatch.METADATA_INITIALIZATION_MARKER, "turnId": "two"},
+    ], [{"id": "one", "state": "completed"}, {"id": "two", "state": "completed"}]),
+    ([{"role": "assistant", "origin": "provider", "text": dispatch.METADATA_INITIALIZATION_MARKER}], []),
+    ([{"role": "assistant", "origin": "provider", "text": dispatch.METADATA_INITIALIZATION_MARKER, "turnId": "marker-turn"}], [{"id": "marker-turn", "state": "running"}]),
+])
+def test_metadata_marker_turn_requires_one_completed_bound_turn(messages, turns):
+    with pytest.raises(dispatch.DispatchFailure):
+        dispatch.verify_metadata_marker_turn(conversation_snapshot(messages=messages, turns=turns))
+
+
+@pytest.mark.parametrize("head, status", [
+    ("head-after", ""),
+    ("head-before", " M scripts/aictrl_task_dispatch.py"),
+])
+def test_metadata_worktree_snapshot_fails_closed_on_head_or_status_drift(monkeypatch, tmp_path, head, status):
+    monkeypatch.setattr(dispatch, "git", lambda _, *args, **__: "head-before" if args[0] == "rev-parse" else "")
+    before = dispatch.worktree_snapshot(tmp_path)
+    monkeypatch.setattr(dispatch, "git", lambda _, *args, **__: head if args[0] == "rev-parse" else status)
+    with pytest.raises(dispatch.DispatchFailure, match="METADATA_WORKTREE_(MUTATED|NOT_CLEAN)"):
+        dispatch.verify_metadata_worktree_unchanged(before, tmp_path)
+
+
+def test_metadata_worktree_snapshot_requires_a_clean_baseline(monkeypatch, tmp_path):
+    monkeypatch.setattr(dispatch, "git", lambda _, *args, **__: "head-before" if args[0] == "rev-parse" else "?? unexpected")
+    with pytest.raises(dispatch.DispatchFailure, match="METADATA_WORKTREE_NOT_CLEAN"):
+        dispatch.worktree_snapshot(tmp_path)
 
 
 @pytest.mark.parametrize("session, snapshot, code", [
-    (None, {"providerThreadId": "codex-thread-1"}, "DESKTOP_THREAD_TITLE_UNVERIFIED"),
-    ({"displayName": "other"}, {"providerThreadId": "codex-thread-1"}, "DESKTOP_THREAD_TITLE_UNVERIFIED"),
-    ({"displayName": "AICTRL PRE-005 terra"}, {}, "PROVIDER_THREAD_ID_UNAVAILABLE"),
+    ({"harness": "codex", "status": "terminated"}, conversation_snapshot(), "METADATA_INITIALIZATION_TERMINATED"),
+    ({"harness": "codex"}, {"conversationId": "conversation-1", "sessionId": "session-1", "harness": "codex", "settings": {"model": "gpt-5.6-luna", "reasoningEffort": "low"}}, "CONVERSATION_SETTINGS_SUBSTITUTION"),
 ])
-def test_desktop_metadata_failures_close_before_worker_brief(monkeypatch, session, snapshot, code):
-    monkeypatch.setattr(dispatch, "command_success", lambda *_: True)
-    monkeypatch.setattr(dispatch, "session_snapshot", lambda *_: session)
+def test_metadata_initialization_fails_closed_on_termination_or_settings_drift(monkeypatch, session, snapshot, code):
+    monkeypatch.setattr(dispatch, "api_document", lambda *_args, **_kwargs: {"session": session})
+    monkeypatch.setattr(dispatch, "conversation_snapshot", lambda *_: snapshot)
+    monkeypatch.setattr(dispatch.time, "sleep", lambda _: None)
+    with pytest.raises(dispatch.DispatchFailure, match=code):
+        dispatch.wait_for_metadata_initialization({"port": 1}, "session-1", "gpt-5.6-terra", "medium")
+
+
+def test_metadata_initialization_timeout_fails_closed(monkeypatch):
+    monkeypatch.setattr(dispatch, "METADATA_INITIALIZATION_ATTEMPTS", 1)
+    monkeypatch.setattr(dispatch, "api_document", lambda *_args, **_kwargs: {"session": {"harness": "codex"}})
+    monkeypatch.setattr(dispatch, "conversation_snapshot", lambda *_: conversation_snapshot())
+    monkeypatch.setattr(dispatch.time, "sleep", lambda _: None)
+    with pytest.raises(dispatch.DispatchFailure, match="METADATA_INITIALIZATION_TIMEOUT"):
+        dispatch.wait_for_metadata_initialization({"port": 1}, "session-1", "gpt-5.6-terra", "medium")
+
+
+def test_provider_native_title_round_trip_and_conversation_id_are_verified_before_brief(monkeypatch):
+    calls = []
+    monkeypatch.setattr(dispatch, "command_success", lambda *_: pytest.fail("must not use ao session rename"))
+    monkeypatch.setattr(dispatch, "api_document", lambda *args, **kwargs: calls.append((args, kwargs)) or {})
+    monkeypatch.setattr(dispatch, "conversation_snapshot", lambda *_: conversation_snapshot())
+    assert dispatch.set_and_verify_desktop_thread({"port": 1}, "session-1", "gpt-5.6-terra", "medium", "AICTRL PRE-005 terra") == "conversation-1"
+    assert calls == [(({"port": 1}, "/api/v1/sessions/session-1/conversation/title"), {"method": "PUT", "payload": {"title": "AICTRL PRE-005 terra"}})]
+
+
+@pytest.mark.parametrize("snapshot, code", [
+    (conversation_snapshot(title="other"), "DESKTOP_THREAD_TITLE_UNVERIFIED"),
+    (conversation_snapshot(conversation_id=""), "CONVERSATION_ID_UNAVAILABLE"),
+    ({"conversationId": "conversation-1", "sessionId": "session-1", "harness": "codex", "settings": {"model": "gpt-5.6-luna", "reasoningEffort": "low"}, "title": "AICTRL PRE-005 terra"}, "CONVERSATION_SETTINGS_SUBSTITUTION"),
+])
+def test_desktop_metadata_failures_close_before_worker_brief(monkeypatch, snapshot, code):
+    monkeypatch.setattr(dispatch, "api_document", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(dispatch, "conversation_snapshot", lambda *_: snapshot)
     with pytest.raises(dispatch.DispatchFailure, match=code):
-        dispatch.set_and_verify_desktop_thread("ao.exe", {"port": 1}, "session-1", "project-1", "AICTRL PRE-005 terra")
+        dispatch.set_and_verify_desktop_thread({"port": 1}, "session-1", "gpt-5.6-terra", "medium", "AICTRL PRE-005 terra")
 
 
 def test_desktop_thread_title_set_failure_fails_closed(monkeypatch):
-    monkeypatch.setattr(dispatch, "command_success", lambda *_: False)
+    monkeypatch.setattr(dispatch, "api_document", lambda *_args, **_kwargs: None)
     with pytest.raises(dispatch.DispatchFailure, match="DESKTOP_THREAD_TITLE_SET_FAILED"):
-        dispatch.set_and_verify_desktop_thread("ao.exe", {"port": 1}, "session-1", "project-1", "AICTRL PRE-005 terra")
+        dispatch.set_and_verify_desktop_thread({"port": 1}, "session-1", "gpt-5.6-terra", "medium", "AICTRL PRE-005 terra")
 
 
 def test_post_worker_desktop_metadata_is_reverified_before_review_evidence(monkeypatch):
-    monkeypatch.setattr(dispatch, "session_snapshot", lambda *_: {"displayName": "AICTRL PRE-005 terra"})
-    monkeypatch.setattr(dispatch, "conversation_snapshot", lambda *_: {"providerThreadId": "codex-thread-1"})
-    assert dispatch.reverify_desktop_thread("ao.exe", {"port": 1}, "session-1", "project-1", "AICTRL PRE-005 terra", "codex-thread-1") is None
+    monkeypatch.setattr(dispatch, "conversation_snapshot", lambda *_: conversation_snapshot())
+    assert dispatch.reverify_desktop_thread({"port": 1}, "session-1", "gpt-5.6-terra", "medium", "AICTRL PRE-005 terra", "conversation-1") is None
 
 
-@pytest.mark.parametrize("session, snapshot, code", [
-    (None, {"providerThreadId": "codex-thread-1"}, "DESKTOP_THREAD_TITLE_UNVERIFIED"),
-    ({"displayName": "other"}, {"providerThreadId": "codex-thread-1"}, "DESKTOP_THREAD_TITLE_UNVERIFIED"),
-    ({"displayName": "AICTRL PRE-005 terra"}, {}, "PROVIDER_THREAD_ID_UNAVAILABLE"),
-    ({"displayName": "AICTRL PRE-005 terra"}, {"providerThreadId": "other-thread"}, "PROVIDER_THREAD_ID_UNVERIFIED"),
+@pytest.mark.parametrize("snapshot, code", [
+    (conversation_snapshot(title="other"), "DESKTOP_THREAD_TITLE_UNVERIFIED"),
+    (conversation_snapshot(conversation_id=""), "CONVERSATION_ID_UNAVAILABLE"),
+    (conversation_snapshot(conversation_id="other-conversation"), "CONVERSATION_ID_UNVERIFIED"),
+    ({"conversationId": "conversation-1", "sessionId": "session-1", "harness": "codex", "settings": {"model": "gpt-5.6-luna", "reasoningEffort": "low"}, "title": "AICTRL PRE-005 terra"}, "CONVERSATION_SETTINGS_SUBSTITUTION"),
 ])
-def test_post_worker_desktop_metadata_absence_or_drift_fails_closed(monkeypatch, session, snapshot, code):
-    monkeypatch.setattr(dispatch, "session_snapshot", lambda *_: session)
+def test_post_worker_desktop_metadata_absence_or_drift_fails_closed(monkeypatch, snapshot, code):
     monkeypatch.setattr(dispatch, "conversation_snapshot", lambda *_: snapshot)
     with pytest.raises(dispatch.DispatchFailure, match=code):
-        dispatch.reverify_desktop_thread("ao.exe", {"port": 1}, "session-1", "project-1", "AICTRL PRE-005 terra", "codex-thread-1")
+        dispatch.reverify_desktop_thread({"port": 1}, "session-1", "gpt-5.6-terra", "medium", "AICTRL PRE-005 terra", "conversation-1")
 
 
 def test_direct_script_entry_bootstraps_repo_src_without_pythonpath(tmp_path):
@@ -244,10 +357,15 @@ def test_target_repository_gh_calls_clear_actions_tokens(monkeypatch):
 def test_worker_spawn_is_chat_mode_with_model_but_without_an_initial_task_turn(monkeypatch):
     commands = []
     monkeypatch.setattr(dispatch, "run", lambda command, **_: commands.append(command) or SimpleNamespace(returncode=0, stdout="spawned session session-1 (chat)"))
-    assert dispatch.spawn_worker("ao.exe", "project-1", 20, "gpt-5.6-terra", "aictrl/task", "task") == "session-1"
-    assert "--prompt" not in commands[0]
-    assert commands[0][commands[0].index("--model") + 1] == "gpt-5.6-terra"
-    assert commands[0][commands[0].index("--mode") + 1] == "chat"
+    assert dispatch.spawn_worker("ao.exe", "project-1", "gpt-5.6-terra", "aictrl/task", "task") == "session-1"
+    command = commands[0]
+    assert all(flag not in command for flag in ("--issue", "--tracker-provider", "--prompt"))
+    assert command[command.index("--project") + 1] == "project-1"
+    assert command[command.index("--harness") + 1] == "codex"
+    assert command[command.index("--model") + 1] == "gpt-5.6-terra"
+    assert command[command.index("--mode") + 1] == "chat"
+    assert command[command.index("--branch") + 1] == "aictrl/task"
+    assert command[command.index("--name") + 1] == "task"
 
 
 def test_worker_session_name_is_deterministic_and_limited_to_twenty_characters():
@@ -298,11 +416,12 @@ def test_unexpected_post_spawn_failure_still_runs_cleanup_and_cleanup_overrides(
 
 def test_review_event_is_schema_valid_and_carries_controller_evidence():
     task = task_document()
-    event = dispatch.review_event(task, "event-2", {"number": 8, "url": "https://example.test/pr/8"}, "a" * 40, "gpt-5.6-terra", "medium", "session-1", "AICTRL PRE-005 terra", "codex-thread-1")
+    event = dispatch.review_event(task, "event-2", {"number": 8, "url": "https://example.test/pr/8"}, "a" * 40, "gpt-5.6-terra", "medium", "session-1", "AICTRL PRE-005 terra", "conversation-1")
     assert dispatch.validate_document(event).valid
     assert event["payload"]["session_id"] == "session-1"
     assert event["payload"]["desktop_thread_name"] == "AICTRL PRE-005 terra"
-    assert event["payload"]["provider_thread_id"] == "codex-thread-1"
+    assert event["payload"]["conversation_id"] == "conversation-1"
+    assert event["payload"]["desktop_thread_verified"] is True
     with pytest.raises(dispatch.DispatchFailure, match="REVIEW_THREAD_EVIDENCE_INVALID"):
         dispatch.review_event(task, "event-2", {"number": 8, "url": "https://example.test/pr/8"}, "a" * 40, "gpt-5.6-terra", "medium", "session-1", "", "")
 
