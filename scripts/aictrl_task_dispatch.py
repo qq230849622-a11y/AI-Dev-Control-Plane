@@ -46,6 +46,12 @@ REGISTRY_DIRECTORY = Path(".ai-control/projects")
 TASK_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 MAX_DESKTOP_THREAD_NAME = 80
 MAX_WORKER_BRIEF_LENGTH = 3500
+METADATA_INITIALIZATION_MARKER = "AICTRL_THREAD_READY_V1"
+METADATA_INITIALIZATION_MESSAGE = (
+    "AICTRL metadata initialization only. Do not read files, use tools, run commands, "
+    f"or make edits. Reply with exactly {METADATA_INITIALIZATION_MARKER}."
+)
+METADATA_INITIALIZATION_ATTEMPTS = 24
 
 
 class DispatchFailure(RuntimeError):
@@ -482,36 +488,71 @@ def desktop_thread_name(task_id, model):
     return f"{prefix}{task_id[:available]}-{digest}{suffix}"
 
 
-def session_snapshot(binary, session_id, project_id):
-    document = command_json(binary, "session", "get", session_id, "--project", project_id, "--json")
-    session = document.get("session") if isinstance(document, dict) else None
-    return session if isinstance(session, dict) else None
+def conversation_id(snapshot):
+    value = snapshot.get("conversationId") if isinstance(snapshot, dict) else None
+    if not isinstance(value, str) or not value.strip():
+        raise DispatchFailure("CONVERSATION_ID_UNAVAILABLE")
+    return value
 
 
-def provider_thread_id(snapshot):
-    thread_id = snapshot.get("providerThreadId") if isinstance(snapshot, dict) else None
-    if not isinstance(thread_id, str) or not thread_id.strip():
-        raise DispatchFailure("PROVIDER_THREAD_ID_UNAVAILABLE")
-    return thread_id
+def provider_message_is_exact_marker(snapshot):
+    messages = snapshot.get("messages") if isinstance(snapshot, dict) else None
+    if not isinstance(messages, list):
+        return False
+    provider_messages = [
+        message for message in messages
+        if isinstance(message, dict) and message.get("role") == "assistant" and message.get("origin") == "provider"
+    ]
+    return bool(provider_messages) and provider_messages[-1].get("text") == METADATA_INITIALIZATION_MARKER
 
 
-def set_and_verify_desktop_thread(binary, status, session_id, project_id, title):
+def send_metadata_initialization(binary, session_id):
+    send_worker_brief(binary, session_id, METADATA_INITIALIZATION_MESSAGE)
+
+
+def wait_for_metadata_initialization(status, session_id, model, reasoning):
+    for _ in range(METADATA_INITIALIZATION_ATTEMPTS):
+        session_doc = api_document(status, f"/api/v1/sessions/{quote(session_id, safe='')}")
+        session = session_doc.get("session") if isinstance(session_doc, dict) else None
+        if isinstance(session, dict) and session.get("harness") not in (None, "codex"):
+            raise DispatchFailure("HARNESS_SUBSTITUTION")
+        snapshot = conversation_snapshot(status, session_id)
+        if isinstance(snapshot, dict):
+            if not bound_conversation(snapshot, session_id, model, reasoning):
+                raise DispatchFailure("CONVERSATION_SETTINGS_SUBSTITUTION")
+            if provider_message_is_exact_marker(snapshot):
+                return snapshot
+        if isinstance(session, dict) and session.get("status") == "terminated":
+            raise DispatchFailure("METADATA_INITIALIZATION_TERMINATED")
+        time.sleep(5)
+    raise DispatchFailure("METADATA_INITIALIZATION_TIMEOUT")
+
+
+def set_and_verify_desktop_thread(status, session_id, model, reasoning, title):
     if not isinstance(title, str) or not title.strip() or len(title) > MAX_DESKTOP_THREAD_NAME:
         raise DispatchFailure("DESKTOP_THREAD_NAME_INVALID")
-    if not command_success(binary, "session", "rename", session_id, title, "--project", project_id):
+    response = api_document(
+        status, f"/api/v1/sessions/{quote(session_id, safe='')}/conversation/title",
+        method="PUT", payload={"title": title},
+    )
+    if response is None:
         raise DispatchFailure("DESKTOP_THREAD_TITLE_SET_FAILED")
-    session = session_snapshot(binary, session_id, project_id)
-    if session is None or session.get("displayName") != title:
+    snapshot = conversation_snapshot(status, session_id)
+    if not bound_conversation(snapshot, session_id, model, reasoning):
+        raise DispatchFailure("CONVERSATION_SETTINGS_SUBSTITUTION")
+    if snapshot.get("title") != title:
         raise DispatchFailure("DESKTOP_THREAD_TITLE_UNVERIFIED")
-    return provider_thread_id(conversation_snapshot(status, session_id))
+    return conversation_id(snapshot)
 
 
-def reverify_desktop_thread(binary, status, session_id, project_id, title, expected_provider_id):
-    session = session_snapshot(binary, session_id, project_id)
-    if session is None or session.get("displayName") != title:
+def reverify_desktop_thread(status, session_id, model, reasoning, title, expected_conversation_id):
+    snapshot = conversation_snapshot(status, session_id)
+    if not bound_conversation(snapshot, session_id, model, reasoning):
+        raise DispatchFailure("CONVERSATION_SETTINGS_SUBSTITUTION")
+    if snapshot.get("title") != title:
         raise DispatchFailure("DESKTOP_THREAD_TITLE_UNVERIFIED")
-    if provider_thread_id(conversation_snapshot(status, session_id)) != expected_provider_id:
-        raise DispatchFailure("PROVIDER_THREAD_ID_UNVERIFIED")
+    if conversation_id(snapshot) != expected_conversation_id:
+        raise DispatchFailure("CONVERSATION_ID_UNVERIFIED")
 
 
 def send_worker_brief(binary, session_id, brief):
@@ -660,10 +701,10 @@ def verify_pr_metadata(pr, branch, base_branch, worker_head):
         raise DispatchFailure("PR_STATE_MISMATCH")
 
 
-def review_event(task, event_id, pr, worker_head, model, reasoning, session_id, desktop_thread_name, provider_thread_id):
+def review_event(task, event_id, pr, worker_head, model, reasoning, session_id, desktop_thread_name, conversation_id):
     if (
         not isinstance(desktop_thread_name, str) or not desktop_thread_name.strip()
-        or not isinstance(provider_thread_id, str) or not provider_thread_id.strip()
+        or not isinstance(conversation_id, str) or not conversation_id.strip()
     ):
         raise DispatchFailure("REVIEW_THREAD_EVIDENCE_INVALID")
     event = {
@@ -671,7 +712,7 @@ def review_event(task, event_id, pr, worker_head, model, reasoning, session_id, 
         "task_id": task["task_id"], "head_sha": worker_head, "event_id": event_id,
         "actor": "AICTRL_CONTROLLER", "event_type": "REVIEW_REQUESTED", "status": "READY_FOR_REVIEW",
         "occurred_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
-        "payload": {"pr_number": pr["number"], "pr_url": pr["url"], "model": model, "reasoning": reasoning, "session_id": session_id, "desktop_thread_name": desktop_thread_name, "provider_thread_id": provider_thread_id, "verification": "provider thread title and id, result, PR scope, controller testing_policy, and terminated AO session verified"},
+        "payload": {"pr_number": pr["number"], "pr_url": pr["url"], "model": model, "reasoning": reasoning, "session_id": session_id, "desktop_thread_name": desktop_thread_name, "conversation_id": conversation_id, "desktop_thread_verified": True, "verification": "provider-native thread title, AO conversation correlation, result, PR scope, controller testing_policy, and terminated AO session verified"},
     }
     if not validate_document(event).valid:
         raise DispatchFailure("REVIEW_EVENT_SCHEMA_INVALID")
@@ -715,7 +756,7 @@ def execute(event_path, result_path):
     status = None
     project_id = ""
     desktop_title = ""
-    provider_id = ""
+    conversation_id = ""
     failure = None
     evidence = ""
     try:
@@ -752,15 +793,17 @@ def execute(event_path, result_path):
         verify_isolated_workspace(workspace, main_path)
         set_conversation_settings(status, session_id, model, task["reasoning"])
         desktop_title = desktop_thread_name(task["task_id"], model)
-        provider_id = set_and_verify_desktop_thread(binary, status, session_id, project_id, desktop_title)
+        send_metadata_initialization(binary, session_id)
+        wait_for_metadata_initialization(status, session_id, model, task["reasoning"])
+        conversation_id = set_and_verify_desktop_thread(status, session_id, model, task["reasoning"], desktop_title)
         send_worker_brief(binary, session_id, worker_brief(task, branch, binding.default_branch, issue_number))
         result = wait_for_worker(status, session_id, task, model, task["reasoning"])
         pr, worker_head = verify_worker_pr(workspace, main_path, binding, task, branch, result)
         run_testing_policy(workspace, task)
         if defender_fingerprint() != defender_before:
             raise DispatchFailure("DEFENDER_NEW_DETECTION")
-        reverify_desktop_thread(binary, status, session_id, project_id, desktop_title, provider_id)
-        evidence = json.dumps(review_event(task, dispatch["event_id"], pr, worker_head, model, task["reasoning"], session_id, desktop_title, provider_id), sort_keys=True) + "\n"
+        reverify_desktop_thread(status, session_id, model, task["reasoning"], desktop_title, conversation_id)
+        evidence = json.dumps(review_event(task, dispatch["event_id"], pr, worker_head, model, task["reasoning"], session_id, desktop_title, conversation_id), sort_keys=True) + "\n"
     except DispatchFailure as exc:
         failure = exc.code
     except Exception:
