@@ -66,10 +66,12 @@ def reject_existing_artifacts(main_path, task, branch):
         raise base.DispatchFailure("LOCAL_BRANCH_RECLAIM_UNVERIFIED")
 
 
-base.reject_existing_artifacts = reject_existing_artifacts
+def install():
+    base.reject_existing_artifacts = reject_existing_artifacts
 
 
 def main(argv=None):
+    install()
     return base.main(argv)
 
 
