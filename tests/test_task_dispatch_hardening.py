@@ -1,4 +1,5 @@
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -136,6 +137,31 @@ def test_fully_merged_unbound_local_residue_is_deleted_atomically_and_verified(m
     assert delete_commands == [["git", "update-ref", "-d", f"refs/heads/{BRANCH}", TIP]]
     assert all("-D" not in command for command in calls)
     assert exists_calls == 2
+
+
+def test_real_git_reclaims_only_an_already_reachable_local_ref(monkeypatch, tmp_path):
+    subprocess.run(["git", "init", "-b", "master"], cwd=tmp_path, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "config", "user.email", "aictrl@example.invalid"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "AICTRL Test"], cwd=tmp_path, check=True)
+    (tmp_path / "marker.txt").write_text("baseline\n", encoding="utf-8")
+    subprocess.run(["git", "add", "marker.txt"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-m", "baseline"], cwd=tmp_path, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "branch", BRANCH], cwd=tmp_path, check=True)
+
+    original_run = base.run
+
+    def intercept_remote_only(command, **kwargs):
+        if command[1:4] == ["ls-remote", "--heads", "origin"]:
+            return result()
+        return original_run(command, **kwargs)
+
+    monkeypatch.setattr(base, "run", intercept_remote_only)
+    hard.reject_existing_artifacts(tmp_path, {"repo": "owner/repo"}, BRANCH)
+    assert subprocess.run(
+        ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{BRANCH}"],
+        cwd=tmp_path,
+        check=False,
+    ).returncode == 1
 
 
 def test_local_ref_existence_lookup_error_fails_closed(monkeypatch, tmp_path):
