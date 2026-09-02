@@ -15,6 +15,11 @@ def result(returncode=0, stdout=""):
     return SimpleNamespace(returncode=returncode, stdout=stdout, stderr="")
 
 
+@pytest.fixture(autouse=True)
+def no_historical_pr_artifact(monkeypatch):
+    monkeypatch.setattr(base, "github_json", lambda *args, **kwargs: [])
+
+
 def test_absent_local_and_remote_branch_passes_without_mutation(monkeypatch, tmp_path):
     calls = []
 
@@ -27,12 +32,13 @@ def test_absent_local_and_remote_branch_passes_without_mutation(monkeypatch, tmp
         pytest.fail(f"unexpected command: {command}")
 
     monkeypatch.setattr(base, "run", fake_run)
-    hard.reject_existing_artifacts(tmp_path, {}, BRANCH)
+    hard.reject_existing_artifacts(tmp_path, {"repo": "owner/repo"}, BRANCH)
     assert not any(command[1:3] == ["update-ref", "-d"] for command in calls)
 
 
-def test_remote_branch_always_fails_closed_before_local_reclamation(monkeypatch, tmp_path):
+def test_remote_branch_always_fails_closed_before_pr_or_local_reclamation(monkeypatch, tmp_path):
     calls = []
+    monkeypatch.setattr(base, "github_json", lambda *args, **kwargs: pytest.fail("PR lookup must not run after remote artifact"))
 
     def fake_run(command, **kwargs):
         calls.append(command)
@@ -42,8 +48,28 @@ def test_remote_branch_always_fails_closed_before_local_reclamation(monkeypatch,
 
     monkeypatch.setattr(base, "run", fake_run)
     with pytest.raises(base.DispatchFailure, match="REMOTE_BRANCH_EXISTS"):
-        hard.reject_existing_artifacts(tmp_path, {}, BRANCH)
+        hard.reject_existing_artifacts(tmp_path, {"repo": "owner/repo"}, BRANCH)
     assert not any("show-ref" in command for command in calls)
+
+
+def test_historical_pr_artifact_blocks_even_when_remote_branch_is_absent(monkeypatch, tmp_path):
+    monkeypatch.setattr(base, "github_json", lambda *args, **kwargs: [{"number": 7}])
+
+    def fake_run(command, **kwargs):
+        if command[1:4] == ["ls-remote", "--heads", "origin"]:
+            return result()
+        pytest.fail(f"local branch must not be inspected after PR artifact: {command}")
+
+    monkeypatch.setattr(base, "run", fake_run)
+    with pytest.raises(base.DispatchFailure, match="PR_ARTIFACT_EXISTS"):
+        hard.reject_existing_artifacts(tmp_path, {"repo": "owner/repo"}, BRANCH)
+
+
+def test_pr_precheck_must_return_a_list(monkeypatch, tmp_path):
+    monkeypatch.setattr(base, "github_json", lambda *args, **kwargs: {"number": 7})
+    monkeypatch.setattr(base, "run", lambda command, **kwargs: result() if command[1:4] == ["ls-remote", "--heads", "origin"] else pytest.fail(f"unexpected command: {command}"))
+    with pytest.raises(base.DispatchFailure, match="PR_PRECHECK_FAILED"):
+        hard.reject_existing_artifacts(tmp_path, {"repo": "owner/repo"}, BRANCH)
 
 
 def test_worktree_bound_local_branch_is_preserved(monkeypatch, tmp_path):
@@ -60,7 +86,7 @@ def test_worktree_bound_local_branch_is_preserved(monkeypatch, tmp_path):
 
     monkeypatch.setattr(base, "run", fake_run)
     with pytest.raises(base.DispatchFailure, match="LOCAL_BRANCH_WORKTREE_BOUND"):
-        hard.reject_existing_artifacts(tmp_path, {}, BRANCH)
+        hard.reject_existing_artifacts(tmp_path, {"repo": "owner/repo"}, BRANCH)
 
 
 def test_unmerged_local_branch_is_preserved(monkeypatch, tmp_path):
@@ -79,7 +105,7 @@ def test_unmerged_local_branch_is_preserved(monkeypatch, tmp_path):
 
     monkeypatch.setattr(base, "run", fake_run)
     with pytest.raises(base.DispatchFailure, match="LOCAL_BRANCH_UNMERGED"):
-        hard.reject_existing_artifacts(tmp_path, {}, BRANCH)
+        hard.reject_existing_artifacts(tmp_path, {"repo": "owner/repo"}, BRANCH)
 
 
 def test_fully_merged_unbound_local_residue_is_deleted_atomically_and_verified(monkeypatch, tmp_path):
@@ -105,7 +131,7 @@ def test_fully_merged_unbound_local_residue_is_deleted_atomically_and_verified(m
         pytest.fail(f"unexpected command: {command}")
 
     monkeypatch.setattr(base, "run", fake_run)
-    hard.reject_existing_artifacts(tmp_path, {}, BRANCH)
+    hard.reject_existing_artifacts(tmp_path, {"repo": "owner/repo"}, BRANCH)
     delete_commands = [command for command in calls if command[1:3] == ["update-ref", "-d"]]
     assert delete_commands == [["git", "update-ref", "-d", f"refs/heads/{BRANCH}", TIP]]
     assert all("-D" not in command for command in calls)
@@ -122,7 +148,7 @@ def test_local_ref_existence_lookup_error_fails_closed(monkeypatch, tmp_path):
 
     monkeypatch.setattr(base, "run", fake_run)
     with pytest.raises(base.DispatchFailure, match="LOCAL_BRANCH_CHECK_FAILED"):
-        hard.reject_existing_artifacts(tmp_path, {}, BRANCH)
+        hard.reject_existing_artifacts(tmp_path, {"repo": "owner/repo"}, BRANCH)
 
 
 def test_local_ref_resolution_error_fails_closed(monkeypatch, tmp_path):
@@ -137,7 +163,7 @@ def test_local_ref_resolution_error_fails_closed(monkeypatch, tmp_path):
 
     monkeypatch.setattr(base, "run", fake_run)
     with pytest.raises(base.DispatchFailure, match="LOCAL_BRANCH_CHECK_FAILED"):
-        hard.reject_existing_artifacts(tmp_path, {}, BRANCH)
+        hard.reject_existing_artifacts(tmp_path, {"repo": "owner/repo"}, BRANCH)
 
 
 def test_wrapper_installs_only_the_hardened_preflight():
