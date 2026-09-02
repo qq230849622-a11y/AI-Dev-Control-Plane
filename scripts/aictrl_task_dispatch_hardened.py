@@ -2,9 +2,10 @@
 
 This thin wrapper preserves the canonical dispatcher and replaces only its
 existing-artifact preflight. A deterministic local task branch may be reclaimed
-only when Git positively proves that the remote branch is absent, no worktree
-owns the branch, and the branch tip is already reachable from the synced
-current HEAD. Ambiguity preserves data and fails closed.
+only when Git positively proves that the remote branch is absent, no historical
+PR artifact exists, no worktree owns the branch, and the branch tip is already
+reachable from the synced current HEAD. Ambiguity preserves data and fails
+closed.
 """
 
 import scripts.aictrl_task_dispatch as base
@@ -38,8 +39,31 @@ def _branch_is_worktree_bound(main_path, branch):
     return f"branch refs/heads/{branch}" in output.splitlines()
 
 
+def _reject_pr_artifacts(task, branch):
+    prs = base.github_json(
+        [
+            "pr",
+            "list",
+            "--repo",
+            task["repo"],
+            "--head",
+            branch,
+            "--state",
+            "all",
+            "--json",
+            "number",
+        ],
+        "PR_PRECHECK_FAILED",
+        target_repository=True,
+    )
+    if not isinstance(prs, list):
+        raise base.DispatchFailure("PR_PRECHECK_FAILED")
+    if prs:
+        raise base.DispatchFailure("PR_ARTIFACT_EXISTS")
+
+
 def reject_existing_artifacts(main_path, task, branch):
-    """Reject live artifacts; reclaim only a provably safe stale local branch."""
+    """Reject live/history artifacts; reclaim only a provably safe stale local ref."""
     remote = base.run(
         ["git", "ls-remote", "--heads", "origin", branch],
         cwd=main_path,
@@ -48,6 +72,10 @@ def reject_existing_artifacts(main_path, task, branch):
         raise base.DispatchFailure("REMOTE_BRANCH_CHECK_FAILED")
     if remote.stdout.strip():
         raise base.DispatchFailure("REMOTE_BRANCH_EXISTS")
+
+    # Preserve the canonical all-state PR history boundary even when the remote
+    # branch was deleted after a previous PR was closed or merged.
+    _reject_pr_artifacts(task, branch)
 
     local_tip = _local_branch_tip(main_path, branch)
     if local_tip is None:
