@@ -22,8 +22,8 @@ def test_absent_local_and_remote_branch_passes_without_mutation(monkeypatch, tmp
         calls.append(command)
         if command[1:4] == ["ls-remote", "--heads", "origin"]:
             return result()
-        if command[1:4] == ["show-ref", "--verify", "--hash"]:
-            return result(1)
+        if command[1:3] == ["show-ref", "--exists"]:
+            return result(2)
         pytest.fail(f"unexpected command: {command}")
 
     monkeypatch.setattr(base, "run", fake_run)
@@ -50,6 +50,8 @@ def test_worktree_bound_local_branch_is_preserved(monkeypatch, tmp_path):
     def fake_run(command, **kwargs):
         if command[1:4] == ["ls-remote", "--heads", "origin"]:
             return result()
+        if command[1:3] == ["show-ref", "--exists"]:
+            return result()
         if command[1:4] == ["show-ref", "--verify", "--hash"]:
             return result(stdout=TIP + "\n")
         if command[1:4] == ["worktree", "list", "--porcelain"]:
@@ -64,6 +66,8 @@ def test_worktree_bound_local_branch_is_preserved(monkeypatch, tmp_path):
 def test_unmerged_local_branch_is_preserved(monkeypatch, tmp_path):
     def fake_run(command, **kwargs):
         if command[1:4] == ["ls-remote", "--heads", "origin"]:
+            return result()
+        if command[1:3] == ["show-ref", "--exists"]:
             return result()
         if command[1:4] == ["show-ref", "--verify", "--hash"]:
             return result(stdout=TIP + "\n")
@@ -80,16 +84,18 @@ def test_unmerged_local_branch_is_preserved(monkeypatch, tmp_path):
 
 def test_fully_merged_unbound_local_residue_is_deleted_atomically_and_verified(monkeypatch, tmp_path):
     calls = []
-    show_ref_calls = 0
+    exists_calls = 0
 
     def fake_run(command, **kwargs):
-        nonlocal show_ref_calls
+        nonlocal exists_calls
         calls.append(command)
         if command[1:4] == ["ls-remote", "--heads", "origin"]:
             return result()
+        if command[1:3] == ["show-ref", "--exists"]:
+            exists_calls += 1
+            return result() if exists_calls == 1 else result(2)
         if command[1:4] == ["show-ref", "--verify", "--hash"]:
-            show_ref_calls += 1
-            return result(stdout=TIP + "\n") if show_ref_calls == 1 else result(1)
+            return result(stdout=TIP + "\n")
         if command[1:4] == ["worktree", "list", "--porcelain"]:
             return result(stdout="worktree C:/repo\nHEAD cafe\nbranch refs/heads/master\n")
         if command[1:4] == ["merge-base", "--is-ancestor", TIP]:
@@ -103,12 +109,27 @@ def test_fully_merged_unbound_local_residue_is_deleted_atomically_and_verified(m
     delete_commands = [command for command in calls if command[1:3] == ["update-ref", "-d"]]
     assert delete_commands == [["git", "update-ref", "-d", f"refs/heads/{BRANCH}", TIP]]
     assert all("-D" not in command for command in calls)
-    assert show_ref_calls == 2
+    assert exists_calls == 2
 
 
-def test_local_ref_lookup_error_fails_closed(monkeypatch, tmp_path):
+def test_local_ref_existence_lookup_error_fails_closed(monkeypatch, tmp_path):
     def fake_run(command, **kwargs):
         if command[1:4] == ["ls-remote", "--heads", "origin"]:
+            return result()
+        if command[1:3] == ["show-ref", "--exists"]:
+            return result(1)
+        pytest.fail(f"unexpected command: {command}")
+
+    monkeypatch.setattr(base, "run", fake_run)
+    with pytest.raises(base.DispatchFailure, match="LOCAL_BRANCH_CHECK_FAILED"):
+        hard.reject_existing_artifacts(tmp_path, {}, BRANCH)
+
+
+def test_local_ref_resolution_error_fails_closed(monkeypatch, tmp_path):
+    def fake_run(command, **kwargs):
+        if command[1:4] == ["ls-remote", "--heads", "origin"]:
+            return result()
+        if command[1:3] == ["show-ref", "--exists"]:
             return result()
         if command[1:4] == ["show-ref", "--verify", "--hash"]:
             return result(128)
