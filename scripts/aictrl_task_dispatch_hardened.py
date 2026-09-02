@@ -10,15 +10,18 @@ current HEAD. Ambiguity preserves data and fails closed.
 import scripts.aictrl_task_dispatch as base
 
 
-def _local_branch_exists(main_path, branch):
+def _local_branch_tip(main_path, branch):
     result = base.run(
-        ["git", "show-ref", "--verify", f"refs/heads/{branch}"],
+        ["git", "show-ref", "--verify", "--hash", f"refs/heads/{branch}"],
         cwd=main_path,
     )
     if result.returncode == 0:
-        return True
+        tip = result.stdout.strip()
+        if not tip:
+            raise base.DispatchFailure("LOCAL_BRANCH_CHECK_FAILED")
+        return tip
     if result.returncode == 1:
-        return False
+        return None
     raise base.DispatchFailure("LOCAL_BRANCH_CHECK_FAILED")
 
 
@@ -44,14 +47,15 @@ def reject_existing_artifacts(main_path, task, branch):
     if remote.stdout.strip():
         raise base.DispatchFailure("REMOTE_BRANCH_EXISTS")
 
-    if not _local_branch_exists(main_path, branch):
+    local_tip = _local_branch_tip(main_path, branch)
+    if local_tip is None:
         return
 
     if _branch_is_worktree_bound(main_path, branch):
         raise base.DispatchFailure("LOCAL_BRANCH_WORKTREE_BOUND")
 
     ancestry = base.run(
-        ["git", "merge-base", "--is-ancestor", f"refs/heads/{branch}", "HEAD"],
+        ["git", "merge-base", "--is-ancestor", local_tip, "HEAD"],
         cwd=main_path,
     )
     if ancestry.returncode == 1:
@@ -59,10 +63,13 @@ def reject_existing_artifacts(main_path, task, branch):
     if ancestry.returncode != 0:
         raise base.DispatchFailure("LOCAL_BRANCH_ANCESTRY_CHECK_FAILED")
 
-    deleted = base.run(["git", "branch", "--delete", branch], cwd=main_path)
+    deleted = base.run(
+        ["git", "update-ref", "-d", f"refs/heads/{branch}", local_tip],
+        cwd=main_path,
+    )
     if deleted.returncode != 0:
         raise base.DispatchFailure("LOCAL_BRANCH_RECLAIM_FAILED")
-    if _local_branch_exists(main_path, branch):
+    if _local_branch_tip(main_path, branch) is not None:
         raise base.DispatchFailure("LOCAL_BRANCH_RECLAIM_UNVERIFIED")
 
 
