@@ -47,6 +47,8 @@ jobs:
           PYTHONIOENCODING: 'utf-8'
           PYTHONDONTWRITEBYTECODE: '1'
         shell: powershell
+        # The hardening module wraps and delegates to the canonical base implementation:
+        # python scripts/aictrl_task_dispatch.py
         run: >-
           python -m scripts.aictrl_task_dispatch_hardened
           --event "$env:GITHUB_EVENT_PATH"
