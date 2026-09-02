@@ -3,9 +3,9 @@
 This thin wrapper preserves the canonical dispatcher and replaces only its
 existing-artifact preflight. A deterministic local task branch may be reclaimed
 only when Git positively proves that the remote branch is absent, no historical
-PR artifact exists, no worktree owns the branch, and the branch tip is already
-reachable from the synced current HEAD. Ambiguity preserves data and fails
-closed.
+PR artifact exists, the local task ref is a direct ref, no worktree owns the
+branch, and the branch tip is already reachable from the synced current HEAD.
+Ambiguity preserves data and fails closed.
 """
 
 import scripts.aictrl_task_dispatch as base
@@ -17,6 +17,12 @@ def _local_branch_tip(main_path, branch):
     if exists.returncode == 2:
         return None
     if exists.returncode != 0:
+        raise base.DispatchFailure("LOCAL_BRANCH_CHECK_FAILED")
+
+    symbolic = base.run(["git", "symbolic-ref", "-q", ref], cwd=main_path)
+    if symbolic.returncode == 0:
+        raise base.DispatchFailure("LOCAL_BRANCH_SYMBOLIC_REF")
+    if symbolic.returncode != 1:
         raise base.DispatchFailure("LOCAL_BRANCH_CHECK_FAILED")
 
     resolved = base.run(["git", "show-ref", "--verify", "--hash", ref], cwd=main_path)
@@ -94,7 +100,7 @@ def reject_existing_artifacts(main_path, task, branch):
         raise base.DispatchFailure("LOCAL_BRANCH_ANCESTRY_CHECK_FAILED")
 
     deleted = base.run(
-        ["git", "update-ref", "-d", f"refs/heads/{branch}", local_tip],
+        ["git", "update-ref", "--no-deref", "-d", f"refs/heads/{branch}", local_tip],
         cwd=main_path,
     )
     if deleted.returncode != 0:
