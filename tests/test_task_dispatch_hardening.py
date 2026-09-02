@@ -34,7 +34,7 @@ def test_absent_local_and_remote_branch_passes_without_mutation(monkeypatch, tmp
 
     monkeypatch.setattr(base, "run", fake_run)
     hard.reject_existing_artifacts(tmp_path, {"repo": "owner/repo"}, BRANCH)
-    assert not any(command[1:3] == ["update-ref", "-d"] for command in calls)
+    assert not any(command[1:4] == ["update-ref", "--no-deref", "-d"] for command in calls)
 
 
 def test_remote_branch_always_fails_closed_before_pr_or_local_reclamation(monkeypatch, tmp_path):
@@ -79,6 +79,8 @@ def test_worktree_bound_local_branch_is_preserved(monkeypatch, tmp_path):
             return result()
         if command[1:3] == ["show-ref", "--exists"]:
             return result()
+        if command[1:4] == ["symbolic-ref", "-q", f"refs/heads/{BRANCH}"]:
+            return result(1)
         if command[1:4] == ["show-ref", "--verify", "--hash"]:
             return result(stdout=TIP + "\n")
         if command[1:4] == ["worktree", "list", "--porcelain"]:
@@ -96,6 +98,8 @@ def test_unmerged_local_branch_is_preserved(monkeypatch, tmp_path):
             return result()
         if command[1:3] == ["show-ref", "--exists"]:
             return result()
+        if command[1:4] == ["symbolic-ref", "-q", f"refs/heads/{BRANCH}"]:
+            return result(1)
         if command[1:4] == ["show-ref", "--verify", "--hash"]:
             return result(stdout=TIP + "\n")
         if command[1:4] == ["worktree", "list", "--porcelain"]:
@@ -106,6 +110,21 @@ def test_unmerged_local_branch_is_preserved(monkeypatch, tmp_path):
 
     monkeypatch.setattr(base, "run", fake_run)
     with pytest.raises(base.DispatchFailure, match="LOCAL_BRANCH_UNMERGED"):
+        hard.reject_existing_artifacts(tmp_path, {"repo": "owner/repo"}, BRANCH)
+
+
+def test_symbolic_local_task_ref_is_preserved(monkeypatch, tmp_path):
+    def fake_run(command, **kwargs):
+        if command[1:4] == ["ls-remote", "--heads", "origin"]:
+            return result()
+        if command[1:3] == ["show-ref", "--exists"]:
+            return result()
+        if command[1:4] == ["symbolic-ref", "-q", f"refs/heads/{BRANCH}"]:
+            return result(stdout="refs/heads/master\n")
+        pytest.fail(f"unexpected command: {command}")
+
+    monkeypatch.setattr(base, "run", fake_run)
+    with pytest.raises(base.DispatchFailure, match="LOCAL_BRANCH_SYMBOLIC_REF"):
         hard.reject_existing_artifacts(tmp_path, {"repo": "owner/repo"}, BRANCH)
 
 
@@ -121,31 +140,37 @@ def test_fully_merged_unbound_local_residue_is_deleted_atomically_and_verified(m
         if command[1:3] == ["show-ref", "--exists"]:
             exists_calls += 1
             return result() if exists_calls == 1 else result(2)
+        if command[1:4] == ["symbolic-ref", "-q", f"refs/heads/{BRANCH}"]:
+            return result(1)
         if command[1:4] == ["show-ref", "--verify", "--hash"]:
             return result(stdout=TIP + "\n")
         if command[1:4] == ["worktree", "list", "--porcelain"]:
             return result(stdout="worktree C:/repo\nHEAD cafe\nbranch refs/heads/master\n")
         if command[1:4] == ["merge-base", "--is-ancestor", TIP]:
             return result()
-        if command[1:3] == ["update-ref", "-d"]:
+        if command[1:4] == ["update-ref", "--no-deref", "-d"]:
             return result()
         pytest.fail(f"unexpected command: {command}")
 
     monkeypatch.setattr(base, "run", fake_run)
     hard.reject_existing_artifacts(tmp_path, {"repo": "owner/repo"}, BRANCH)
-    delete_commands = [command for command in calls if command[1:3] == ["update-ref", "-d"]]
-    assert delete_commands == [["git", "update-ref", "-d", f"refs/heads/{BRANCH}", TIP]]
+    delete_commands = [command for command in calls if command[1:4] == ["update-ref", "--no-deref", "-d"]]
+    assert delete_commands == [["git", "update-ref", "--no-deref", "-d", f"refs/heads/{BRANCH}", TIP]]
     assert all("-D" not in command for command in calls)
     assert exists_calls == 2
 
 
-def test_real_git_reclaims_only_an_already_reachable_local_ref(monkeypatch, tmp_path):
+def _initialize_real_git_repo(tmp_path):
     subprocess.run(["git", "init", "-b", "master"], cwd=tmp_path, check=True, capture_output=True, text=True)
     subprocess.run(["git", "config", "user.email", "aictrl@example.invalid"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.name", "AICTRL Test"], cwd=tmp_path, check=True)
     (tmp_path / "marker.txt").write_text("baseline\n", encoding="utf-8")
     subprocess.run(["git", "add", "marker.txt"], cwd=tmp_path, check=True)
     subprocess.run(["git", "commit", "-m", "baseline"], cwd=tmp_path, check=True, capture_output=True, text=True)
+
+
+def test_real_git_reclaims_only_an_already_reachable_direct_local_ref(monkeypatch, tmp_path):
+    _initialize_real_git_repo(tmp_path)
     subprocess.run(["git", "branch", BRANCH], cwd=tmp_path, check=True)
 
     original_run = base.run
@@ -162,6 +187,37 @@ def test_real_git_reclaims_only_an_already_reachable_local_ref(monkeypatch, tmp_
         cwd=tmp_path,
         check=False,
     ).returncode == 1
+
+
+def test_real_git_symbolic_task_ref_cannot_delete_its_target(monkeypatch, tmp_path):
+    _initialize_real_git_repo(tmp_path)
+    master_before = subprocess.run(
+        ["git", "rev-parse", "refs/heads/master"], cwd=tmp_path, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "symbolic-ref", f"refs/heads/{BRANCH}", "refs/heads/master"],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    original_run = base.run
+
+    def intercept_remote_only(command, **kwargs):
+        if command[1:4] == ["ls-remote", "--heads", "origin"]:
+            return result()
+        return original_run(command, **kwargs)
+
+    monkeypatch.setattr(base, "run", intercept_remote_only)
+    with pytest.raises(base.DispatchFailure, match="LOCAL_BRANCH_SYMBOLIC_REF"):
+        hard.reject_existing_artifacts(tmp_path, {"repo": "owner/repo"}, BRANCH)
+
+    master_after = subprocess.run(
+        ["git", "rev-parse", "refs/heads/master"], cwd=tmp_path, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    assert master_after == master_before
+    assert subprocess.run(
+        ["git", "symbolic-ref", f"refs/heads/{BRANCH}"], cwd=tmp_path, check=True, capture_output=True, text=True
+    ).stdout.strip() == "refs/heads/master"
 
 
 def test_local_ref_existence_lookup_error_fails_closed(monkeypatch, tmp_path):
@@ -183,6 +239,8 @@ def test_local_ref_resolution_error_fails_closed(monkeypatch, tmp_path):
             return result()
         if command[1:3] == ["show-ref", "--exists"]:
             return result()
+        if command[1:4] == ["symbolic-ref", "-q", f"refs/heads/{BRANCH}"]:
+            return result(1)
         if command[1:4] == ["show-ref", "--verify", "--hash"]:
             return result(128)
         pytest.fail(f"unexpected command: {command}")
