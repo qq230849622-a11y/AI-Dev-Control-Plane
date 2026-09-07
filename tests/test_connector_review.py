@@ -117,3 +117,25 @@ def test_cli_keeps_one_process_and_rejects_failed_connector():
         if process.poll() is None:
             process.kill()
             process.wait()
+
+
+def test_cli_times_out_with_stdin_still_open():
+    code = ("from functools import partial; from scripts import aictrl_connector_review as m; "
+            "m.ConnectorSession = partial(m.ConnectorSession, timeout=0.1); "
+            "raise SystemExit(m.main())")
+    process = subprocess.Popen([sys.executable, "-u", "-c", code, "--comment-id", "11"],
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, text=True, encoding="utf-8")
+    try:
+        assert json.loads(process.stdout.readline())["status"] == "TOOL_REQUIRED"
+        assert json.loads(process.stdout.readline()) == {
+            "status": "REJECTED", "reason": "CONNECTOR_RESPONSE_TIMEOUT"}
+        process.wait(timeout=3)
+        assert process.returncode == 1
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        process.stdin.close()
+        process.stdout.close()
+        process.stderr.close()

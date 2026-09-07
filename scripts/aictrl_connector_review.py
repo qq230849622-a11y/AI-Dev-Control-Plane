@@ -134,7 +134,13 @@ def main():
         if result["status"] == "RUNNING":
             result = session.next()
         elif result["status"] == "TOOL_REQUIRED":
-            line = sys.stdin.readline()
+            incoming = queue.Queue()
+            threading.Thread(target=lambda: incoming.put(sys.stdin.readline()), daemon=True).start()
+            try:
+                line = incoming.get(timeout=max(0, result["expires_at"] - time.time()))
+            except queue.Empty:
+                print(json.dumps({"status": "REJECTED", "reason": "CONNECTOR_RESPONSE_TIMEOUT"}), flush=True)
+                return 1
             if not line:
                 return 1
             try:
