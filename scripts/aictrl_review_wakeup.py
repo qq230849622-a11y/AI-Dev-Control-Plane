@@ -29,7 +29,7 @@ def api(path, method="GET", payload=None, missing_ok=False):
     if payload is not None:
         command += ["--input", "-"]
     response = subprocess.run(command, input=json.dumps(payload) if payload is not None else None,
-                              capture_output=True, text=True, timeout=60)
+                              capture_output=True, text=True, encoding="utf-8", timeout=60)
     if response.returncode:
         if missing_ok and "(HTTP 404)" in response.stderr:
             return None

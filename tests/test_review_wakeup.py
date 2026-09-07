@@ -210,3 +210,11 @@ def test_fetch_adapter_refetches_source_pr_files_and_baseline(monkeypatch):
     monkeypatch.setattr(adapter, "api", api)
     assert adapter.fetch_bundle(11)["key"] == bundle()["key"]
     assert any("/compare/" in path for path in calls)
+
+
+def test_github_json_transport_uses_utf8_not_windows_locale(monkeypatch):
+    def run(command, **kwargs):
+        assert kwargs["encoding"] == "utf-8"
+        return SimpleNamespace(returncode=0, stdout='{"body":"审查 — evidence"}', stderr="")
+    monkeypatch.setattr(adapter.subprocess, "run", run)
+    assert adapter.api(f"repos/{REPO}/issues/64")["body"] == "审查 — evidence"
