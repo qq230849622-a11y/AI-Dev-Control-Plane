@@ -7,6 +7,7 @@ on:
 permissions:
   contents: read
   issues: write
+  pull-requests: write
 
 concurrency:
   group: aictrl-dispatch-ai-dev-control-plane
@@ -63,4 +64,7 @@ jobs:
           $result = "$env:RUNNER_TEMP\aictrl-task-result.txt"
           if (!(Test-Path -LiteralPath $result)) { throw "AICTRL controller evidence is missing." }
           gh issue comment ${{ github.event.issue.number }} --repo qq230849622-a11y/AI-Dev-Control-Plane --body-file $result
+          if ($LASTEXITCODE -ne 0) { throw "Controller issue evidence post failed." }
           if ('${{ steps.dispatch.outcome }}' -ne 'success') { exit 1 }
+          python -m scripts.aictrl_review_wakeup mirror --event-file "$result" --source-issue ${{ github.event.issue.number }}
+          if ($LASTEXITCODE -ne 0) { throw "Controller PR event delivery failed." }

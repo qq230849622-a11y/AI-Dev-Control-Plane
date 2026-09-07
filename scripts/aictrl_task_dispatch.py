@@ -866,7 +866,9 @@ def execute(event_path, result_path):
         if defender_fingerprint() != defender_before:
             raise DispatchFailure("DEFENDER_NEW_DETECTION")
         reverify_desktop_thread(status, session_id, model, task["reasoning"], desktop_title, conversation_id)
-        evidence = json.dumps(review_event(task, dispatch["event_id"], pr, worker_head, model, task["reasoning"], session_id, desktop_title, conversation_id), sort_keys=True) + "\n"
+        event = review_event(task, dispatch["event_id"], pr, worker_head, model, task["reasoning"], session_id, desktop_title, conversation_id)
+        event["payload"]["source_issue_number"] = issue_number
+        evidence = json.dumps(event, sort_keys=True) + "\n"
     except DispatchFailure as exc:
         failure = exc.code
     except Exception:

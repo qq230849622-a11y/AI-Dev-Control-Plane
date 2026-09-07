@@ -61,6 +61,11 @@ described in [Architecture](docs/ARCHITECTURE.md).
 
 ## Protocol contracts
 
+The [Controller wakeup integration](docs/CONTROLLER_WAKEUP.md) provides PR-event
+transport and deterministic admission/decision gates for a ChatGPT Work reviewer.
+Native event subscription and real cloud execution require separate acceptance;
+the repository implementation alone does not establish an autonomous loop.
+
 Runnable sanitized examples are in [examples](examples). They are fixtures for
 schema validation, not executable production tasks.
 
