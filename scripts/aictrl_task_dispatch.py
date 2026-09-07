@@ -28,6 +28,7 @@ if str(SOURCE_DIRECTORY) not in sys.path:
 
 from aictrl.registry import RegistryError, load_registry
 from aictrl.validator import validate_document
+from aictrl.execution_budget import budget_for, worker_guidance, GateEvidence, input_fingerprint
 
 
 CONTROLLER_REPOSITORY = "qq230849622-a11y/AI-Dev-Control-Plane"
@@ -199,6 +200,9 @@ def require_controller_issue_author(issue):
 
 
 def validate_task_policy(task, dispatch):
+    budget = budget_for(task)
+    if not set(budget["reusable_commands"]).issubset(task["testing_policy"]["commands"]):
+        raise DispatchFailure("EXECUTION_BUDGET_COMMAND_MISMATCH")
     if any(task.get(key) != dispatch[key] for key in dispatch if key != "event_id"):
         raise DispatchFailure("DISPATCH_TASK_BINDING_MISMATCH")
     if task["owner"] != CONTROLLER_OWNER:
@@ -424,6 +428,7 @@ def worker_brief(task, branch, base_branch, issue_number):
         f"Implement only the envelope objective/acceptance criteria and obey allowed_scope/forbidden_scope. Create exactly one open non-draft PR from {branch} to {base_branch}; never merge it.",
         "Run only targeted checks needed to implement/debug, then commit and push without force/reset/rebase and leave the worktree clean.",
         "The controller owns the canonical testing_policy as its post-worker gate.",
+        worker_guidance(task),
         "Do not start another agent, change model, use Goal mode, or perform follow-on work.",
         "Your final provider message must contain exactly the following delimited JSON shape and no other text:",
         RESULT_BEGIN,
@@ -638,7 +643,8 @@ def final_provider_result(snapshot):
 
 
 def wait_for_worker(status, session_id, task, model, reasoning):
-    for _ in range(240):
+    deadline = time.monotonic() + budget_for(task)["worker_seconds"]
+    while time.monotonic() < deadline:
         session_doc = api_document(status, f"/api/v1/sessions/{quote(session_id, safe='')}")
         session = session_doc.get("session") if isinstance(session_doc, dict) else None
         if isinstance(session, dict) and session.get("harness") not in (None, "codex"):
@@ -648,7 +654,10 @@ def wait_for_worker(status, session_id, task, model, reasoning):
             raise DispatchFailure("CONVERSATION_SETTINGS_SUBSTITUTION")
         if isinstance(snapshot, dict):
             try:
-                return final_provider_result(snapshot)
+                result = final_provider_result(snapshot)
+                if time.monotonic() >= deadline:
+                    raise DispatchFailure("WORKER_TIMEOUT")
+                return result
             except DispatchFailure as error:
                 if error.code not in {"WORKER_RESULT_MISSING", "WORKER_RESULT_INVALID"}:
                     raise
@@ -656,6 +665,40 @@ def wait_for_worker(status, session_id, task, model, reasoning):
             raise DispatchFailure("WORKER_TERMINATED_BEFORE_READY")
         time.sleep(5)
     raise DispatchFailure("WORKER_TIMEOUT")
+
+
+def run_budgeted_testing_policy(workspace, task):
+    """A bounded final test gate; only explicitly hermetic commands can reuse evidence."""
+    policy = task.get("testing_policy")
+    if (not isinstance(policy, dict) or type(policy.get("required")) is not bool
+            or not isinstance(policy.get("commands"), list)
+            or any(not isinstance(c, str) or not c.strip() for c in policy["commands"])
+            or policy["required"] != bool(policy["commands"])):
+        raise DispatchFailure("TESTING_POLICY_INVALID")
+    budget = budget_for(task)
+    cache = GateEvidence(budget["reuse_seconds"])
+    deadline = time.monotonic() + 900
+    records = []
+    for command in policy["commands"]:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise DispatchFailure("CONTROLLER_TEST_BUDGET_EXHAUSTED")
+        reusable = command in budget["reusable_commands"]
+        before = input_fingerprint(workspace, task, git(workspace, "rev-parse", "HEAD"), deadline) if reusable else None
+        if cache.reusable(command, before, time.monotonic()):
+            records.append({"command": command, "status": "REUSED", "input_sha256": before})
+            continue
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise DispatchFailure("CONTROLLER_TEST_BUDGET_EXHAUSTED")
+        if run(command, cwd=workspace, timeout=remaining, shell=True).returncode != 0:
+            raise DispatchFailure("CONTROLLER_TESTS_FAILED")
+        after = input_fingerprint(workspace, task, git(workspace, "rev-parse", "HEAD"), deadline) if reusable else None
+        cache.record_success(command, before, after, time.monotonic())
+        records.append({"command": command, "status": "PASSED", "input_sha256": after})
+    if time.monotonic() > deadline:
+        raise DispatchFailure("CONTROLLER_TEST_BUDGET_EXHAUSTED")
+    return records
 
 
 def normalized_changed_paths(paths):
@@ -862,11 +905,23 @@ def execute(event_path, result_path):
         send_worker_brief(binary, session_id, worker_brief(task, branch, binding.default_branch, issue_number))
         result = wait_for_worker(status, session_id, task, model, task["reasoning"])
         pr, worker_head = verify_worker_pr(workspace, main_path, binding, task, branch, result)
-        run_testing_policy(workspace, task)
+        if "execution_budget_policy" in task:
+            test_evidence = run_budgeted_testing_policy(workspace, task)
+        else:
+            run_testing_policy(workspace, task)
+            test_evidence = None
+        # Tests are code too: never publish evidence against a changed PR/head/scope.
+        checked_pr, checked_head = verify_worker_pr(workspace, main_path, binding, task, branch, result)
+        if checked_head != worker_head or checked_pr != pr:
+            raise DispatchFailure("POST_TEST_PR_CHANGED")
         if defender_fingerprint() != defender_before:
             raise DispatchFailure("DEFENDER_NEW_DETECTION")
         reverify_desktop_thread(status, session_id, model, task["reasoning"], desktop_title, conversation_id)
-        evidence = json.dumps(review_event(task, dispatch["event_id"], pr, worker_head, model, task["reasoning"], session_id, desktop_title, conversation_id), sort_keys=True) + "\n"
+        event = review_event(task, dispatch["event_id"], pr, worker_head, model, task["reasoning"], session_id, desktop_title, conversation_id)
+        if test_evidence is not None:
+            event["payload"]["execution_budget"] = budget_for(task)
+            event["payload"]["controller_tests"] = test_evidence
+        evidence = json.dumps(event, sort_keys=True) + "\n"
     except DispatchFailure as exc:
         failure = exc.code
     except Exception:

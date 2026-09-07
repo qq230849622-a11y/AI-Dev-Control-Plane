@@ -40,6 +40,11 @@ enabled project-key/repository match.
 
 ## Execution boundary
 
+The [Execution Budget Policy](EXECUTION_BUDGET_POLICY.md) treats a task envelope
+as one complete deliverable, with implementation batches inside the worker and
+independent validation at the controller gate. It preserves one admitted attempt
+and all identity/authority checks; provider Goal mode remains disabled.
+
 The production dispatcher is deliberately narrower than a general-purpose
 agent runner. It:
 

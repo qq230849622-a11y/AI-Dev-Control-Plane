@@ -33,6 +33,8 @@ evidence are rejected instead of silently routed.
 - fixed model/complexity policy and one-attempt execution boundaries;
 - branch, PR, head-SHA, changed-file, test, and worker-session verification;
 - deterministic failure evidence for blocked or incomplete work;
+- goal-oriented worker batching and an optional versioned execution budget with
+  bounded final testing and conservative controller-owned evidence reuse;
 - Python CLI usable locally or in CI.
 
 ## Quick start
@@ -60,6 +62,9 @@ controller workflow, and the Windows self-hosted Agent Orchestrator runner
 described in [Architecture](docs/ARCHITECTURE.md).
 
 ## Protocol contracts
+
+See [Execution Budget Policy](docs/EXECUTION_BUDGET_POLICY.md) for complete-goal
+authoring, continuous-work boundaries, repair guidance and validation gates.
 
 Runnable sanitized examples are in [examples](examples). They are fixtures for
 schema validation, not executable production tasks.
