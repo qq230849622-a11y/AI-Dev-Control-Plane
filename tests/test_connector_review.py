@@ -5,10 +5,95 @@ import sys
 
 import pytest
 
-from scripts.aictrl_connector_review import ConnectorSession
+from scripts.aictrl_connector_review import ConnectorSession, decode_fetch_response
 from scripts import aictrl_review_wakeup as adapter
-from aictrl.review_wakeup import ReviewRejected, admit
-from test_review_wakeup import context, decision, NOW
+from aictrl.review_wakeup import ReviewRejected, admit, decision_record
+from test_review_wakeup import context, decision, bundle, NOW
+
+LEDGER_PATH = f"repos/{adapter.REPO}/contents/decisions/" + "a" * 64 + ".json?ref=aictrl%2Fcontroller-decisions"
+
+
+def decoded_reply(reply):
+    def respond(request):
+        response = reply(request)
+        if (request["tool"] == "github_fetch" and "/contents/decisions/" in request["arguments"]["url"]
+                and response["status"] == "ok"):
+            envelope = json.loads(response["content"])
+            response["content"] = base64.b64decode(envelope["content"]).decode("utf-8")
+        return response
+    return respond
+
+
+@pytest.mark.parametrize("decoded", [False, True])
+def test_readback_lifecycle_preserves_create_only(github, decoded):
+    _, reply, writes = github
+    if decoded:
+        reply = decoded_reply(reply)
+    prepared = drive(ConnectorSession(11), reply)
+    assert prepared["status"] == "REVIEW_REQUIRED"
+    b = prepared["bundle"]
+    result = drive(ConnectorSession(11, decision=decision(b), review_input_sha=b["review_input_sha256"]), reply)
+    assert result["status"] == "RECORDED"
+    assert result["record"] == decision_record(b, decision(b))
+    assert drive(ConnectorSession(11), reply)["status"] == "ALREADY_RECORDED"
+    assert drive(ConnectorSession(11, decision=decision(b), review_input_sha=b["review_input_sha256"]), reply)["status"] == "ALREADY_RECORDED"
+    assert len(writes) == 1
+
+
+@pytest.mark.parametrize("mutation,reason", [
+    (lambda r: r["event"].update(event_id="wrong-event"), "LEDGER_EVENT_MISMATCH"),
+    (lambda r: r["decision"].update(task_id="wrong-task"), "DECISION_BINDING_MISMATCH"),
+    (lambda r: r["decision"].update(head_sha="b" * 40), "DECISION_BINDING_MISMATCH"),
+    (lambda r: r.update(review_input_sha256="b" * 64), "LEDGER_INPUT_MISMATCH"),
+    (lambda r: r["review_input"].update(base_sha="c" * 40), "LEDGER_INPUT_MISMATCH"),
+    (lambda r: r["review_input"].update(files=[]), "LEDGER_INPUT_MISMATCH"),
+    (lambda r: r.clear(), "LEDGER_EVENT_MISMATCH"),
+])
+def test_existing_decoded_record_must_verify(github, mutation, reason):
+    _, reply, writes = github
+    b = bundle()
+    record = decision_record(b, decision(b))
+    mutation(record)
+    def existing(request):
+        if request["tool"] == "github_fetch" and "/contents/decisions/" in request["arguments"]["url"]:
+            return {"id": request["id"], "status": "ok", "content": json.dumps(record)}
+        return reply(request)
+    assert drive(ConnectorSession(11), existing) == {"status": "REJECTED", "reason": reason}
+    assert not writes
+
+
+@pytest.mark.parametrize("text", ['{', '{"event":1,"event":2}', 'NaN'])
+def test_malformed_decoded_ledger_fails_closed(github, text):
+    _, reply, writes = github
+    def malformed(request):
+        if request["tool"] == "github_fetch" and "/contents/decisions/" in request["arguments"]["url"]:
+            return {"id": request["id"], "status": "ok", "content": text}
+        return reply(request)
+    assert drive(ConnectorSession(11), malformed)["status"] == "REJECTED"
+    assert not writes
+
+
+@pytest.mark.parametrize("path", [
+    f"repos/{adapter.REPO}/pulls/62", f"repos/{adapter.REPO}/issues/64",
+    f"repos/{adapter.REPO}/issues/comments/11", f"repos/{adapter.REPO}/git/trees/abc",
+    f"repos/{adapter.REPO}/commits/abc",
+    LEDGER_PATH.replace("decisions/", "other/"), LEDGER_PATH.replace("a" * 64, "abc"),
+    LEDGER_PATH.replace(adapter.REPO, "other/repo"), LEDGER_PATH.split("?")[0],
+    LEDGER_PATH.replace("aictrl%2Fcontroller-decisions", "master"),
+    LEDGER_PATH + "&ref=master", LEDGER_PATH + "&extra=1", LEDGER_PATH + "#fragment",
+])
+def test_decoded_compatibility_is_ledger_branch_scoped(path):
+    record = decision_record(bundle(), decision(bundle()))
+    assert decode_fetch_response(path, json.dumps(record)) == record
+
+
+@pytest.mark.parametrize("envelope", [
+    {"type": "file", "encoding": "base64", "content": "e30=", "sha": "original"},
+    {"type": "dir", "encoding": "base64", "content": "e30="},
+    {"encoding": "none", "content": "{}"},
+])
+def test_envelopes_are_not_reencoded(envelope):
+    assert decode_fetch_response(LEDGER_PATH, json.dumps(envelope)) == envelope
 
 
 @pytest.fixture
@@ -59,8 +144,11 @@ def drive(session, reply):
     return result
 
 
-def test_connector_prepare_record_duplicate_and_lost_response(github):
+@pytest.mark.parametrize("decoded", [False, True])
+def test_connector_prepare_record_duplicate_and_lost_response(github, decoded):
     _, reply, writes = github
+    if decoded:
+        reply = decoded_reply(reply)
     prepared = drive(ConnectorSession(11), reply)
     assert prepared["status"] == "REVIEW_REQUIRED"
     b = prepared["bundle"]

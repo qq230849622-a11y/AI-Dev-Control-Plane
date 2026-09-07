@@ -15,10 +15,26 @@ import sys
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import parse_qsl, urlsplit
 
 from scripts import aictrl_review_wakeup as adapter
 from aictrl.review_wakeup import (ReviewRejected, persist_decision, require,
                                   strict_json, verify_record)
+
+
+def decode_fetch_response(path, text):
+    """Normalize only decoded ledger Contents bodies, never their authority."""
+    data = strict_json(text)
+    url = urlsplit(path)
+    ledger_path = rf"repos/{re.escape(adapter.REPO)}/contents/decisions/[0-9a-f]{{64}}\.json"
+    if (re.fullmatch(ledger_path, url.path) and not url.fragment
+            and parse_qsl(url.query, keep_blank_values=True) == [("ref", adapter.LEDGER_BRANCH)]):
+        # Preserve even malformed envelope-like responses for the existing
+        # ledger gate to reject. Never reinterpret them as decoded records.
+        if not isinstance(data, dict) or not {"type", "encoding", "content"}.intersection(data):
+            return {"type": "file", "encoding": "base64",
+                    "content": base64.b64encode(text.encode("utf-8")).decode("ascii")}
+    return data
 
 
 class ConnectorSession:
@@ -69,7 +85,7 @@ class ConnectorSession:
         if reply.get("status") == "not_found" and missing_ok and method == "GET":
             return None
         require(reply.get("status") == "ok", "GITHUB_REQUEST_FAILED")
-        return strict_json(reply.get("content")) if method == "GET" else None
+        return decode_fetch_response(path, reply.get("content")) if method == "GET" else None
 
     def _run(self, comment_id, probe_pr, decision, review_input_sha):
         token = adapter.TRANSPORT.set(self._request)

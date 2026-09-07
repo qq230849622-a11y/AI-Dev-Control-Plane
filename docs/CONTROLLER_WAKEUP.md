@@ -113,6 +113,23 @@ if that is unavailable, stop rather than transcribe evidence with the model.
 return `status="ok"` on confirmed success or `status="error"` on failure/ambiguity.
 The handler always fetches and validates the stored record before reporting success.
 
+GitHub raw REST hosts return a Contents envelope (`type=file`, `encoding=base64`),
+whereas ChatGPT's connector may return the decoded UTF-8 file body for that same
+URL. Only the trusted connector transport adapts this difference: for an exact
+`contents/decisions/<64 lowercase hex>.json` GET in the fixed repository, with
+the sole `ref=aictrl/controller-decisions` parameter, it parses with `strict_json`
+and wraps decoded body bytes in the existing base64 Contents representation.
+Standard envelopes pass through unchanged; envelope-like malformed responses
+are not reinterpreted. No compatibility applies to other Contents paths,
+branches, PRs, Issues, comments, trees, commits, or other API reads.
+
+This code-only representation conversion does not establish canonical authority.
+The unchanged `GitHubDecisionStore.read`, `strict_json`, and `verify_record` gates
+still validate the actual record, its event/task/head, review-input digest and
+provenance. Invalid JSON, invalid canonical records and ambiguous writes cannot
+be treated as success. No model transcribes or reconstructs evidence, and the
+create-only operation and mandatory authoritative readback remain unchanged.
+
 On REVIEW_REQUIRED, retain the bundle's review_input_sha256 and perform the GPT
 review. Start a new session with `decision=gpt_decision` and
 `review_input_sha=prepared_digest`; it fetches all inputs anew and revalidates
