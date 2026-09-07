@@ -9,6 +9,7 @@ import base64
 import json
 import subprocess
 import sys
+from contextvars import ContextVar
 from pathlib import Path
 from urllib.parse import quote
 
@@ -21,10 +22,14 @@ from aictrl.validator import validate_document
 REPO = "qq230849622-a11y/AI-Dev-Control-Plane"
 PROJECT = "AI_DEV_CONTROL_PLANE"
 LEDGER_BRANCH = "aictrl/controller-decisions"
+TRANSPORT = ContextVar("review_transport", default=None)
 
 
 def api(path, method="GET", payload=None, missing_ok=False):
     require(path.startswith(f"repos/{REPO}/"), "API_REPO_MISMATCH")
+    transport = TRANSPORT.get()
+    if transport is not None:
+        return transport(path, method, payload, missing_ok)
     command = ["gh", "api", "--method", method, path]
     if payload is not None:
         command += ["--input", "-"]

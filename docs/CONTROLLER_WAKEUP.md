@@ -79,6 +79,70 @@ local coding worker. The cloud run must have a callable trusted handler (or an
 equivalently verified tool adapter) before production activation. A prose prompt
 alone is not proof that the deterministic gates ran.
 
+### Cloud connector transport (no gh credentials)
+
+When Work provides persistent Python plus authenticated `github_fetch` and
+`github_create_file`, load the complete controller repository at an explicitly
+pinned, reviewed commit into the cloud runtime (including schemas and registry).
+Verify the commit/source before import; never use the candidate PR checkout.
+Python requires the project's `jsonschema` dependency. Missing code, dependency,
+raw REST access or create-only tooling yields OWNER_REQUIRED.
+
+`scripts.aictrl_connector_review.ConnectorSession` runs the same admission and
+persistence code in an isolated thread with a context-local transport:
+
+```python
+from scripts.aictrl_connector_review import ConnectorSession
+session = ConnectorSession(comment_id, probe_pr=62)  # probe exception only for PR62
+request = session.next()
+```
+
+For each TOOL_REQUIRED result, the trusted host calls the named connector with
+the emitted arguments unchanged. `github_fetch` receives the exact REST URL;
+forward its raw `content` string into `session.next` with the emitted request ID:
+
+```python
+request = session.next({"id": request["id"], "status": "ok", "content": raw_rest_text})
+```
+
+Do not reconstruct, summarize, trim, or fill missing REST fields. Explicit HTTP
+404 may return `status="not_found"`; other tool errors use `status="error"`.
+The host must preserve the raw tool result programmatically or through a file;
+if that is unavailable, stop rather than transcribe evidence with the model.
+`github_create_file` has no update SHA and targets only the dedicated ledger;
+return `status="ok"` on confirmed success or `status="error"` on failure/ambiguity.
+The handler always fetches and validates the stored record before reporting success.
+
+On REVIEW_REQUIRED, retain the bundle's review_input_sha256 and perform the GPT
+review. Start a new session with `decision=gpt_decision` and
+`review_input_sha=prepared_digest`; it fetches all inputs anew and revalidates
+again before creating the canonical file. ALREADY_RECORDED stops duplicate work.
+REJECTED is terminal. RUNNING is only an observation timeout: call `next()` on
+that same session, without resending a previous response. A connector response
+must arrive within 300 seconds; timeout fails closed. Do not execute an outstanding
+write after that deadline. Never serialize/replay session state as authority.
+Loss of the Python session requires fresh admission; canonical GitHub evidence
+remains the only durable authority.
+
+This is an API transport bridge, not a natural-language substitute for machine
+gates. The host has the same trusted role as the existing authenticated gh
+adapter. A unit-tested bridge does not prove the cloud host can actually relay
+raw results or that a native event has invoked it; both need live acceptance.
+
+Hosts with `exec_command` / `write_stdin` can retain the same Python process:
+
+```sh
+python -u -m scripts.aictrl_connector_review --comment-id COMMENT_ID --probe-pr 62
+```
+
+Read each emitted JSON line, perform the connector call, then write one JSON
+response line to that process's stdin. Retain the live process/session handle;
+do not launch a new Python process for each response. Every request carries an
+expires_at Unix timestamp: expired requests must not be executed. For record,
+add `--decision-file decision.json --review-input-sha PREPARED_INPUT_SHA`.
+The native event remains the trigger; this request/response exchange performs
+one finite review operation and is not a GitHub polling loop.
+
 ## Platform setup and acceptance
 
 Official ChatGPT documentation lists GitHub **PR activity** event triggers on Web
