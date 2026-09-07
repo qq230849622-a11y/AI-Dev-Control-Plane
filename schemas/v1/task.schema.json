@@ -44,6 +44,18 @@
     "reasoning": {"enum": ["low", "medium", "high"]},
     "goal_mode": {"type": "boolean"},
     "max_attempts": {"type": "integer", "minimum": 1},
+    "execution_budget_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version"],
+      "properties": {
+        "version": {"const": 1},
+        "worker_seconds": {"type": "integer", "minimum": 60, "maximum": 3600},
+        "self_repair_rounds": {"type": "integer", "minimum": 1, "maximum": 10},
+        "reuse_seconds": {"type": "integer", "minimum": 0, "maximum": 900},
+        "reusable_commands": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+      }
+    },
     "testing_policy": {
       "type": "object",
       "additionalProperties": false,

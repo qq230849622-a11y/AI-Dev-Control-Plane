@@ -1,0 +1,34 @@
+{
+  "protocol": "AICTRL_TASK_V1",
+  "project_key": "AI_DEV_CONTROL_PLANE",
+  "repo": "qq230849622-a11y/AI-Dev-Control-Plane",
+  "task_id": "EXAMPLE-GOAL-001",
+  "head_sha": "e2663570e48dcdaf85ec7a9e9d7ed703e14c88cc",
+  "objective": "Deliver strict execution-budget validation with tests and operator documentation.",
+  "outcome": "Maintainers can author complete goals with bounded execution and explicit final evidence.",
+  "dependencies": [],
+  "allowed_scope": ["src/aictrl/**", "schemas/v1/task.schema.json", "tests/**", "docs/**"],
+  "forbidden_scope": [".github/**", ".ai-control/**"],
+  "acceptance_criteria": [
+    "Legacy envelopes remain valid and invalid budget settings fail closed.",
+    "Regression tests cover changed behavior and unchanged security boundaries.",
+    "Documentation explains defaults, limits and evidence trust."
+  ],
+  "complexity": "C2",
+  "model": "terra",
+  "reasoning": "medium",
+  "goal_mode": false,
+  "max_attempts": 1,
+  "execution_budget_policy": {
+    "version": 1,
+    "worker_seconds": 3600,
+    "self_repair_rounds": 3,
+    "reuse_seconds": 300,
+    "reusable_commands": []
+  },
+  "testing_policy": {"required": true, "commands": ["python -m pytest -q"]},
+  "escalation_policy": {"on_failure": "STOP", "on_blocker": "ESCALATE"},
+  "owner_gate_required": true,
+  "status": "DRAFT",
+  "owner": "qq230849622-a11y"
+}
