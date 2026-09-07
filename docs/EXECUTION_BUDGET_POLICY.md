@@ -83,10 +83,14 @@ whose mutable inputs live in the workspace or environment. Checks depending on
 network services, clocks/randomness, mutable external tools/configuration, Git
 metadata beyond HEAD, or external files must remain non-reusable. The controller
 cannot infer hermeticity from shell text; the trusted contract author declares it.
+Metadata-dependent checks may rely on the modeled file/directory type, mode and
+modification time. Checks relying on access/change times, inode identity, ACLs,
+extended attributes or other unmodeled platform metadata must remain non-reusable.
 
 The controller owns a private in-memory success ledger for one gate invocation.
 It hashes the full task (including project/repo and policy), resolved workspace,
-HEAD, environment, and all workspace file contents/types/modes, including ignored
+HEAD, environment, and all workspace file contents/types/modes/modification times,
+including the root directory and ignored
 dependencies. Git metadata is excluded. Hashing checks the gate deadline;
 unreadable inputs, links/junctions or files changing while read disable reuse.
 The actual environment values are never included in emitted evidence.

@@ -56,6 +56,8 @@ def input_fingerprint(workspace, task, head, deadline=None):
         raise error
 
     try:
+        root_stat = root.stat()
+        digest.update(json.dumps([".", root_stat.st_mode, root_stat.st_mtime_ns]).encode())
         for directory, dirs, files in os.walk(root, followlinks=False,
                                                onerror=unreadable):
             if deadline is not None and time.monotonic() >= deadline:
@@ -81,7 +83,7 @@ def input_fingerprint(workspace, task, head, deadline=None):
                     after = path.stat()
                     if (stat.st_size, stat.st_mtime_ns, stat.st_ino) != (after.st_size, after.st_mtime_ns, after.st_ino):
                         return None
-                digest.update(json.dumps([str(path.relative_to(root)), stat.st_mode,
+                digest.update(json.dumps([str(path.relative_to(root)), stat.st_mode, stat.st_mtime_ns,
                                           path.is_file(), content.hexdigest()]).encode())
     except OSError:
         return None

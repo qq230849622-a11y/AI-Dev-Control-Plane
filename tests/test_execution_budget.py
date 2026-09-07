@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 from copy import deepcopy
 from types import SimpleNamespace
@@ -169,6 +170,34 @@ def test_input_type_change_and_expired_scan_disable_reuse(tmp_path):
     path.write_text("")
     assert before != input_fingerprint(tmp_path, goal_task(), "a" * 40)
     assert input_fingerprint(tmp_path, goal_task(), "a" * 40, deadline=0) is None
+
+
+@pytest.mark.parametrize("target_kind", ["file", "directory", "root"])
+def test_mtime_change_invalidates_success_in_actual_gate(tmp_path, monkeypatch, target_kind):
+    target = tmp_path if target_kind == "root" else tmp_path / "input"
+    if target_kind == "file":
+        target.write_text("unchanged contents")
+    elif target_kind == "directory":
+        target.mkdir()
+    os.utime(target, ns=(1_000_000_000_000_000_000, 1_000_000_000_000_000_000))
+    task = goal_task()
+    task["testing_policy"]["commands"] = ["check", "touch", "check"]
+    monkeypatch.setattr(dispatch, "git", lambda *a: "a" * 40)
+    checks = []
+
+    def run(command, **kwargs):
+        if command == "touch":
+            os.utime(target, ns=(1_100_000_000_000_000_000, 1_100_000_000_000_000_000))
+        else:
+            checks.append(target.stat().st_mtime_ns)
+            if checks[-1] != 1_000_000_000_000_000_000:
+                return SimpleNamespace(returncode=1)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(dispatch, "run", run)
+    with pytest.raises(dispatch.DispatchFailure, match="CONTROLLER_TESTS_FAILED"):
+        dispatch.run_budgeted_testing_policy(tmp_path, task)
+    assert checks == [1_000_000_000_000_000_000, 1_100_000_000_000_000_000]
 
 
 @pytest.mark.parametrize("drift,cleanup_ok,expected", [
