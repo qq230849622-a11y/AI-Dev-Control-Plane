@@ -143,6 +143,12 @@ add `--decision-file decision.json --review-input-sha PREPARED_INPUT_SHA`.
 The native event remains the trigger; this request/response exchange performs
 one finite review operation and is not a GitHub polling loop.
 
+Use a live pipe with writable stdin. If the host requires a Linux PTY, disable
+canonical input and echo in that process's terminal before launching Python
+(`stty -icanon -echo`). Canonical terminal line limits can truncate large REST
+responses; splitting writes alone does not remove that limit. A rejected or
+terminated process requires fresh admission, never a shortened JSON response.
+
 ## Platform setup and acceptance
 
 Official ChatGPT documentation lists GitHub **PR activity** event triggers on Web
